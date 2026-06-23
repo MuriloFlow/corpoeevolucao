@@ -2,11 +2,11 @@
 
 import { addDays, format, subDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { AlertCircle, Bell, Calendar as CalendarIcon, CheckCircle2, ChevronLeft, ChevronRight, Clock, XCircle } from "lucide-react";
+import { AlertCircle, Ban, Bell, Calendar as CalendarIcon, CalendarOff, CheckCircle2, ChevronLeft, ChevronRight, Clock, History, RotateCcw, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Avatar, LoadingState, PageHeader } from "@/components/ui";
-import { getAttendancesByDate } from "@/lib/api";
-import type { ClassAttendance } from "@/lib/types";
+import { Avatar, ErrorBanner, FieldLabel, LoadingState, Modal, PageHeader, StatusBadge } from "@/components/ui";
+import { auditClassOccurrence, getAttendanceHistory, getAttendancesByDate } from "@/lib/api";
+import type { ClassAttendance, ClassOccurrenceAudit, ClassOccurrenceStatus } from "@/lib/types";
 
 type NotifyResult = {
   message?: string;
@@ -24,6 +24,14 @@ export default function PresencasPage() {
   const [loading, setLoading] = useState(true);
   const [sendingPush, setSendingPush] = useState(false);
   const [notifyResult, setNotifyResult] = useState<NotifyResult | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyRows, setHistoryRows] = useState<ClassOccurrenceAudit[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [auditTarget, setAuditTarget] = useState<ClassOccurrenceAudit | null>(null);
+  const [auditStatus, setAuditStatus] = useState<ClassOccurrenceStatus>("nullified");
+  const [auditReason, setAuditReason] = useState("");
+  const [auditing, setAuditing] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -54,6 +62,51 @@ export default function PresencasPage() {
     }
   }
 
+  async function loadHistory() {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      setHistoryRows(await getAttendanceHistory());
+    } catch (reason) {
+      setHistoryError(reason instanceof Error ? reason.message : "Não foi possível carregar o histórico.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    void loadHistory();
+    const interval = window.setInterval(() => void loadHistory(), 15000);
+    return () => window.clearInterval(interval);
+  }, [historyOpen]);
+
+  function openAudit(row: ClassOccurrenceAudit, status: ClassOccurrenceStatus) {
+    setAuditTarget(row);
+    setAuditStatus(status);
+    setAuditReason(status === "normal" ? "Aula restaurada pela administração." : row.reason || "");
+  }
+
+  async function submitAudit() {
+    if (!auditTarget) return;
+    setAuditing(true);
+    setHistoryError(null);
+    try {
+      await auditClassOccurrence({
+        classScheduleId: auditTarget.class_schedule_id,
+        date: auditTarget.date,
+        status: auditStatus,
+        reason: auditReason,
+      });
+      setAuditTarget(null);
+      await Promise.all([loadHistory(), loadData()]);
+    } catch (reason) {
+      setHistoryError(reason instanceof Error ? reason.message : "Não foi possível auditar a aula.");
+    } finally {
+      setAuditing(false);
+    }
+  }
+
   const groupedBySchedule = attendances.reduce((acc, att) => {
     const key = att.class_schedule_id;
     if (!acc[key]) acc[key] = { schedule: att.class_schedule, attendances: [] };
@@ -71,12 +124,15 @@ export default function PresencasPage() {
         eyebrow="Gestao"
         title="Controle de Presencas"
         description="Aulas do dia com alunos pendentes, confirmados e ausentes em tempo real."
-        action={
+        action={<div className="flex flex-wrap gap-2">
+          <button className="btn btn-secondary" onClick={() => setHistoryOpen(true)}>
+            <History className="h-4 w-4" /> Histórico de presenças
+          </button>
           <button className="btn btn-primary bg-blue-600 hover:bg-blue-700" onClick={handleNotifyToday} disabled={sendingPush}>
             <Bell className="h-4 w-4" />
             {sendingPush ? "Enviando..." : "Notificar alunos de hoje"}
           </button>
-        }
+        </div>}
       />
 
       {notifyResult && (
@@ -182,6 +238,56 @@ export default function PresencasPage() {
           })}
         </div>
       )}
+
+      <Modal open={historyOpen} onClose={() => setHistoryOpen(false)} title="Histórico de presenças" description="Auditoria cronológica das aulas realizadas, anuladas e inativadas." size="lg">
+        <div className="grid gap-4">
+          <ErrorBanner message={historyError} />
+          <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4 text-xs leading-5 text-blue-800">
+            <strong>Nula:</strong> feriado ou aula que não deve contar. <strong>Inativada:</strong> aula que não aconteceu; o sistema acrescenta um dia à vigência de cada aluno vinculado, uma única vez.
+          </div>
+          {historyLoading && !historyRows.length ? (
+            <LoadingState label="Carregando histórico..." />
+          ) : (
+            <div className="max-h-[62vh] overflow-y-auto rounded-2xl border border-slate-200">
+              <table className="w-full min-w-[760px] text-left text-sm">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-[10px] font-black uppercase tracking-[.12em] text-slate-400">
+                  <tr><th className="px-4 py-3">Data</th><th className="px-4 py-3">Aula</th><th className="px-4 py-3">Presenças</th><th className="px-4 py-3">Auditoria</th><th className="px-4 py-3 text-right">Ações</th></tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {historyRows.map((row) => (
+                    <tr key={`${row.class_schedule_id}:${row.date}`}>
+                      <td className="px-4 py-3 font-bold text-slate-700">{format(new Date(`${row.date}T12:00:00`), "dd/MM/yyyy")}</td>
+                      <td className="px-4 py-3"><strong className="block text-slate-900">{row.class_schedule?.class_type?.name || "Aula"}</strong><span className="text-xs text-slate-400">{row.class_schedule?.time?.slice(0, 5) || "--:--"}</span></td>
+                      <td className="px-4 py-3 text-xs text-slate-600">{row.confirmed_total || 0} confirmadas · {row.missed_total || 0} faltas · {row.attendance_total || 0} alunos</td>
+                      <td className="px-4 py-3">
+                        {row.status === "nullified" ? <StatusBadge tone="gray">Nula</StatusBadge> : row.status === "inactivated" ? <StatusBadge tone="red">Inativada · +1 dia ({row.affected_students || 0})</StatusBadge> : <StatusBadge tone="green">Normal</StatusBadge>}
+                        {row.reason && <p className="mt-1 max-w-xs text-[11px] text-slate-400">{row.reason}</p>}
+                      </td>
+                      <td className="px-4 py-3"><div className="flex justify-end gap-2">
+                        <button className="icon-btn" title="Marcar como nula" onClick={() => openAudit(row, "nullified")}><Ban className="h-4 w-4 text-slate-600" /></button>
+                        <button className="icon-btn" title="Inativar e compensar alunos" onClick={() => openAudit(row, "inactivated")}><CalendarOff className="h-4 w-4 text-red-600" /></button>
+                        {row.status !== "normal" && <button className="icon-btn" title="Restaurar aula" onClick={() => openAudit(row, "normal")}><RotateCcw className="h-4 w-4 text-blue-600" /></button>}
+                      </div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      <Modal open={Boolean(auditTarget)} onClose={() => setAuditTarget(null)} title={auditStatus === "nullified" ? "Marcar aula como nula" : auditStatus === "inactivated" ? "Inativar aula e compensar alunos" : "Restaurar aula"} description={auditTarget ? `${auditTarget.class_schedule?.class_type?.name || "Aula"} · ${format(new Date(`${auditTarget.date}T12:00:00`), "dd/MM/yyyy")}` : ""} size="sm">
+        <div className="grid gap-4">
+          <ErrorBanner message={historyError} />
+          <label><FieldLabel required>Motivo da auditoria</FieldLabel><textarea className="field min-h-28" value={auditReason} onChange={(event) => setAuditReason(event.target.value)} placeholder="Ex.: feriado municipal ou professora afastada." /></label>
+          {auditStatus === "inactivated" && <p className="rounded-xl bg-red-50 p-3 text-xs font-semibold leading-5 text-red-700">Ao confirmar, cada aluno atualmente vinculado a essa aula receberá +1 dia na matrícula. Repetir a ação não duplica a compensação.</p>}
+          <div className="form-actions">
+            <button className="btn btn-secondary" type="button" onClick={() => setAuditTarget(null)}>Cancelar</button>
+            <button className="btn btn-primary" type="button" disabled={auditing || auditReason.trim().length < 3} onClick={() => void submitAudit()}>{auditing ? "Salvando..." : "Confirmar auditoria"}</button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

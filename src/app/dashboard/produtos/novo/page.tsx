@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ArrowLeft, Save, Tag, Barcode, DollarSign, Package, FileText, MapPin, Layers3 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createProduct } from "@/lib/api";
+import { createProduct, createProductVariant } from "@/lib/api";
 import { ErrorBanner, FieldLabel } from "@/components/ui";
 
 const VARIANT_SIZES = ["P", "M", "G", "GG", "G1", "G2", "G3"];
@@ -13,17 +13,28 @@ function splitVariants(value: string) {
   return value.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean);
 }
 
+const SIZE_CODES: Record<string, string> = {
+  P: "01", M: "02", G: "03", GG: "04", G1: "05", G2: "06", G3: "07",
+};
+
+function stableNumericCode(value: string, length: number) {
+  const normalized = value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  let hash = 0;
+  for (const char of normalized) hash = (hash * 31 + char.charCodeAt(0)) % (10 ** length);
+  return String(hash || 1).padStart(length, "0");
+}
+
+function numericBaseCode(base: string) {
+  const digits = base.replace(/\D/g, "");
+  return digits || stableNumericCode(base, 8);
+}
+
 function variantCode(base: string, index: number, color?: string, size?: string) {
-  const suffix = [color, size]
-    .filter(Boolean)
-    .join("-")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .toUpperCase()
-    .slice(0, 18);
-  return `${base}-${String(index + 1).padStart(2, "0")}${suffix ? `-${suffix}` : ""}`.slice(0, 64);
+  const baseDigits = numericBaseCode(base);
+  const sequence = String(index + 1).padStart(2, "0");
+  const colorCode = color ? stableNumericCode(color, 3) : "000";
+  const sizeCode = size ? (SIZE_CODES[size.toUpperCase()] || stableNumericCode(size, 2)) : "00";
+  return `${baseDigits}${sequence}${colorCode}${sizeCode}`.slice(0, 32);
 }
 
 export default function NovoProdutoPage() {
@@ -55,6 +66,8 @@ export default function NovoProdutoPage() {
     cfop: "",
     cest: "",
     active: true,
+    track_lots: false,
+    track_expiry: false,
     photo_base64: "",
   });
 
@@ -115,45 +128,37 @@ export default function NovoProdutoPage() {
         selling_price: Number(form.selling_price),
         minimum_stock: Number(form.minimum_stock) || 0,
         maximum_stock: Number(form.maximum_stock) || 0,
-        current_stock: Number(form.current_stock) || 0,
         physical_location: form.physical_location.trim() || null,
         ncm: form.ncm.trim() || null,
         cfop: form.cfop.trim() || null,
         cest: form.cest.trim() || null,
         active: form.active,
+        has_variants: variantCombinations.length > 0,
+        track_lots: form.track_lots || form.track_expiry,
+        track_expiry: form.track_expiry,
+        current_stock: variantCombinations.length ? 0 : Number(form.current_stock) || 0,
       });
 
       if (variantCombinations.length) {
         const baseCode = form.barcode.trim() || form.sku.trim() || form.internal_code.trim() || product.id.slice(0, 8);
         await Promise.all(variantCombinations.map((variant, index) => {
-          const barcode = variantCode(baseCode, index, variant.color, variant.size);
-          return createProduct({
-            parent_product_id: product.id,
-            variant_color: variant.color || null,
-            variant_size: variant.size || null,
-            variant_label: [variant.color, variant.size].filter(Boolean).join(" / ") || null,
-            primary_barcode: baseCode,
-            name: [form.name.trim(), variant.color, variant.size].filter(Boolean).join(" "),
-            barcode,
-            sku: form.sku.trim() ? variantCode(form.sku.trim(), index, variant.color, variant.size) : null,
-            internal_code: form.internal_code.trim() ? variantCode(form.internal_code.trim(), index, variant.color, variant.size) : null,
-            category: form.category.trim() || null,
-            subcategory: variant.color || form.subcategory.trim() || null,
-            brand: form.brand.trim() || null,
-            unit_measure: form.unit_measure,
-            weight: form.weight ? Number(form.weight) : null,
-            volume: form.volume ? Number(form.volume) : null,
-            current_cost: form.current_cost ? Number(form.current_cost) : 0,
-            average_cost: form.current_cost ? Number(form.current_cost) : 0,
-            selling_price: Number(form.selling_price),
+          const code = variantCode(baseCode, index, variant.color, variant.size);
+          return createProductVariant({
+            product_id: product.id,
+            code,
+            barcode: null,
+            sku: null,
+            color: variant.color || null,
+            size: variant.size || null,
+            label: [variant.color, variant.size].filter(Boolean).join(" / ") || `Variação ${index + 1}`,
+            current_stock: 0,
             minimum_stock: Number(form.minimum_stock) || 0,
             maximum_stock: Number(form.maximum_stock) || 0,
-            current_stock: 0,
+            current_cost: form.current_cost ? Number(form.current_cost) : 0,
+            selling_price: Number(form.selling_price),
             physical_location: form.physical_location.trim() || null,
-            ncm: form.ncm.trim() || null,
-            cfop: form.cfop.trim() || null,
-            cest: form.cest.trim() || null,
             active: form.active,
+            sort_order: index,
           });
         }));
       }
@@ -300,11 +305,25 @@ export default function NovoProdutoPage() {
                 <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
                   <strong>{variantCombinations.length} variante(s) serao criadas</strong>
                   <p className="mt-1 text-xs leading-5 text-blue-700">
-                    Exemplo de codigo: {(form.barcode || form.sku || form.internal_code || "CODIGO")}-01. Elas aparecem juntas na reimpressao de etiquetas.
+                    Exemplo numérico: {variantCode(form.barcode || form.sku || form.internal_code || "PRODUTO", 0, variantCombinations[0]?.color, variantCombinations[0]?.size)}. A sequência identifica a variante sem gravar cor ou tamanho por extenso.
                   </p>
                 </div>
               </div>
             )}
+          </section>
+
+          <section className="card p-6">
+            <h2 className="text-lg font-bold flex items-center gap-2 mb-4 text-slate-800"><FileText className="w-5 h-5 text-orange-500" /> Rastreabilidade</h2>
+            <div className="grid gap-3">
+              <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-4">
+                <input type="checkbox" checked={form.track_lots} onChange={(event) => setForm((current) => ({ ...current, track_lots: event.target.checked }))} className="mt-0.5 h-4 w-4" />
+                <span><strong className="block text-sm text-slate-800">Controlar lote</strong><small className="mt-1 block text-xs text-slate-500">Recomendado para alimentos, suplementos, cosméticos e itens com rastreabilidade.</small></span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-4">
+                <input type="checkbox" checked={form.track_expiry} onChange={(event) => setForm((current) => ({ ...current, track_expiry: event.target.checked, track_lots: event.target.checked || current.track_lots }))} className="mt-0.5 h-4 w-4" />
+                <span><strong className="block text-sm text-slate-800">Controlar validade</strong><small className="mt-1 block text-xs text-slate-500">Exige validade no recebimento e prepara o estoque para FEFO: vence primeiro, sai primeiro.</small></span>
+              </label>
+            </div>
           </section>
 
           <section className="card p-6">

@@ -1,13 +1,13 @@
 "use client";
 
-import { ArrowLeft, CalendarDays, Clock3, MapPin, Save, UserRound, Users, Camera } from "lucide-react";
+import { ArrowLeft, CalendarDays, Clock3, MapPin, Save, UserRound, Users, Camera, FileSignature } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useRef, type FormEvent } from "react";
 import { ErrorBanner, FieldLabel, PageHeader } from "@/components/ui";
-import { getStudentById, updateStudent, getClassSchedules, getStudentClasses, linkStudentToClasses } from "@/lib/api";
+import { getStudentById, updateStudent, getClassSchedules, getStudentClasses, linkStudentToClasses, getContracts } from "@/lib/api";
 import { useDeviceSelector } from "@/components/device-selector";
-import type { ClassSchedule } from "@/lib/types";
+import type { ClassSchedule, Contract } from "@/lib/types";
 import { calculateIMC, digitsOnly, formatDateTime, maskCEP, maskCPF, maskPhone } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import { use } from "react";
@@ -77,6 +77,7 @@ export default function EditarAlunoPage({ params }: { params: Promise<{ id: stri
   const [cepStatus, setCepStatus] = useState<string | null>(null);
   const [schedules, setSchedules] = useState<ClassSchedule[]>([]);
   const [selectedSchedules, setSelectedSchedules] = useState<string[]>([]);
+  const [contracts, setContracts] = useState<Contract[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [facialScanActive, setFacialScanActive] = useState(false);
   const [streamFrame, setStreamFrame] = useState<string | null>(null);
@@ -122,7 +123,8 @@ export default function EditarAlunoPage({ params }: { params: Promise<{ id: stri
         }
       }),
       getClassSchedules().then((items) => setSchedules(items.filter((item) => item.active))),
-      getStudentClasses(resolvedParams.id).then((classes) => setSelectedSchedules(classes.map(c => c.class_schedule_id)))
+      getStudentClasses(resolvedParams.id).then((classes) => setSelectedSchedules(classes.map(c => c.class_schedule_id))),
+      getContracts().then((items) => setContracts(items.filter((contract) => contract.student_id === resolvedParams.id))),
     ]).finally(() => setLoadingInitial(false));
   }, [resolvedParams.id]);
 
@@ -295,6 +297,41 @@ export default function EditarAlunoPage({ params }: { params: Promise<{ id: stri
             <label><FieldLabel>Gênero</FieldLabel><select className="field" value={form.gender} onChange={(event) => change("gender", event.target.value)}><option value="">Não informado</option><option value="feminino">Feminino</option><option value="masculino">Masculino</option><option value="outro">Outro</option></select></label>
             <TextField id="phone" label="Telefone" value={form.phone} onChange={change} required placeholder="(00) 00000-0000" />
             <TextField id="whatsapp" label="WhatsApp" value={form.whatsapp} onChange={change} placeholder="(00) 00000-0000" />
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="card-header"><div><h2>Contratos e assinaturas</h2><p>Comprovantes manuscritos vinculados ao cadastro</p></div><FileSignature className="h-5 w-5 text-blue-600" /></div>
+          <div className="card-body">
+            {!contracts.length ? (
+              <p className="text-sm text-[#657085]">Nenhum contrato gerado para este aluno.</p>
+            ) : (
+              <div className="grid gap-3">
+                {contracts.map((contract) => {
+                  let signatureImage = "";
+                  try {
+                    const evidence = contract.signature_data ? JSON.parse(contract.signature_data) as { image?: string } : null;
+                    signatureImage = evidence?.image || "";
+                  } catch {
+                    signatureImage = "";
+                  }
+                  return (
+                    <article key={contract.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <strong className="text-sm text-slate-900">{contract.plan?.name || "Plano contratado"}</strong>
+                          <p className="mt-1 text-xs text-slate-500">{contract.status === "signed" ? `Assinado em ${formatDateTime(contract.signed_at || contract.created_at)}` : contract.status === "pending" ? "Aguardando assinatura" : "Contrato cancelado"}</p>
+                        </div>
+                        <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase ${contract.status === "signed" ? "bg-emerald-100 text-emerald-700" : contract.status === "pending" ? "bg-amber-100 text-amber-700" : "bg-slate-200 text-slate-500"}`}>
+                          {contract.status === "signed" ? "Assinado" : contract.status === "pending" ? "Pendente" : "Cancelado"}
+                        </span>
+                      </div>
+                      {signatureImage && <img src={signatureImage} alt="Assinatura manuscrita salva" className="mt-3 h-28 w-full rounded-xl border border-slate-200 bg-white object-contain p-2" />}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </section>
 

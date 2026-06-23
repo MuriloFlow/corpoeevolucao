@@ -54,10 +54,28 @@ export async function POST(request: Request, context: { params: Promise<{ token:
   try {
     const { token } = await context.params;
     const { admin, signing } = await loadSigningRequest(token);
-    const body = await request.json() as { cpf?: unknown; signature?: unknown; accepted?: unknown };
+    const body = await request.json() as {
+      cpf?: unknown;
+      signature?: unknown;
+      signatureImage?: unknown;
+      accepted?: unknown;
+      readToEnd?: unknown;
+    };
     const cpf = typeof body.cpf === "string" ? body.cpf.replace(/\D/g, "") : "";
     const signature = typeof body.signature === "string" ? body.signature.trim() : "";
-    if (cpf.length !== 11 || signature.length < 3 || body.accepted !== true) throw new ApiError("Informe o CPF, o nome da assinatura e aceite os termos.", 400);
+    const signatureImage = typeof body.signatureImage === "string" ? body.signatureImage : "";
+    const validSignatureImage = /^data:image\/png;base64,[a-z0-9+/=]+$/i.test(signatureImage)
+      && signatureImage.length >= 500
+      && signatureImage.length <= 900_000;
+    if (
+      cpf.length !== 11 ||
+      signature.length < 3 ||
+      body.accepted !== true ||
+      body.readToEnd !== true ||
+      !validSignatureImage
+    ) {
+      throw new ApiError("Leia o contrato até o fim, confirme o CPF e faça sua assinatura na tela.", 400);
+    }
 
     const { data: contract } = await admin.from("contracts").select("id, student:students(cpf, full_name)").eq("id", signing.contract_id).single();
     const student = Array.isArray(contract?.student) ? contract.student[0] : contract?.student;
@@ -65,7 +83,16 @@ export async function POST(request: Request, context: { params: Promise<{ token:
 
     const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || null;
     const signedAt = new Date().toISOString();
-    const signatureData = JSON.stringify({ name: signature, cpfLast4: cpf.slice(-4), acceptedAt: signedAt });
+    const signatureData = JSON.stringify({
+      name: signature,
+      cpfLast4: cpf.slice(-4),
+      acceptedAt: signedAt,
+      image: signatureImage,
+      evidence: {
+        readToEnd: true,
+        userAgent: request.headers.get("user-agent")?.slice(0, 300) || null,
+      },
+    });
     const { data: signedContract, error } = await admin.from("contracts").update({ status: "signed", signed_at: signedAt, ip_address: ip, signature_data: signatureData }).eq("id", contract.id).eq("status", "pending").select("id").single();
     if (error || !signedContract) throw new ApiError("O contrato não está mais disponível para assinatura.", 409);
     await admin.from("contract_signing_requests").update({ used_at: signedAt }).eq("id", signing.id).is("used_at", null);

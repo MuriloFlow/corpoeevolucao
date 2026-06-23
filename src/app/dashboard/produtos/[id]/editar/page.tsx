@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { ArrowLeft, Save, Tag, Barcode, DollarSign, Package, FileText, MapPin, Trash2 } from "lucide-react";
+import { ArrowLeft, Save, Tag, Barcode, DollarSign, Package, FileText, MapPin, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getProductById, updateProduct, deleteProduct } from "@/lib/api";
+import { createProductVariant, deleteProductVariant, getProductById, updateProduct, updateProductVariant, deleteProduct } from "@/lib/api";
 import { ErrorBanner, FieldLabel } from "@/components/ui";
+import type { ProductVariant } from "@/lib/types";
 
 export default function EditarProdutoPage({ params }: { params: Promise<{ id: string }> }) {
   const router = useRouter();
@@ -15,6 +16,7 @@ export default function EditarProdutoPage({ params }: { params: Promise<{ id: st
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [variants, setVariants] = useState<ProductVariant[]>([]);
 
   const [form, setForm] = useState({
     name: "",
@@ -37,6 +39,8 @@ export default function EditarProdutoPage({ params }: { params: Promise<{ id: st
     cfop: "",
     cest: "",
     active: true,
+    track_lots: false,
+    track_expiry: false,
     photo_base64: "",
   });
 
@@ -68,8 +72,11 @@ export default function EditarProdutoPage({ params }: { params: Promise<{ id: st
           cfop: product.cfop || "",
           cest: product.cest || "",
           active: product.active ?? true,
+          track_lots: Boolean(product.track_lots),
+          track_expiry: Boolean(product.track_expiry),
           photo_base64: product.photo_url || "",
         });
+        setVariants(product.variants || []);
         
         if (product.photo_url) {
           const img = new Image();
@@ -130,7 +137,33 @@ export default function EditarProdutoPage({ params }: { params: Promise<{ id: st
         cfop: form.cfop.trim() || null,
         cest: form.cest.trim() || null,
         active: form.active,
+        has_variants: variants.length > 0,
+        track_lots: form.track_lots || form.track_expiry,
+        track_expiry: form.track_expiry,
       });
+
+      await Promise.all(variants.map((variant, index) => {
+        const payload = {
+          product_id: id,
+          code: variant.code.trim(),
+          barcode: variant.barcode || null,
+          sku: variant.sku || null,
+          color: variant.color || null,
+          size: variant.size || null,
+          label: variant.label.trim() || `Variação ${index + 1}`,
+          current_stock: Number(variant.current_stock || 0),
+          minimum_stock: Number(variant.minimum_stock || 0),
+          maximum_stock: Number(variant.maximum_stock || 0),
+          current_cost: Number(variant.current_cost || 0),
+          selling_price: Number(variant.selling_price || form.selling_price || 0),
+          physical_location: variant.physical_location || null,
+          active: variant.active,
+          sort_order: index,
+        };
+        return variant.id.startsWith("new-")
+          ? createProductVariant(payload)
+          : updateProductVariant(variant.id, payload);
+      }));
 
       if (form.photo_base64 && form.photo_base64.startsWith("data:image")) {
         try {
@@ -180,6 +213,46 @@ export default function EditarProdutoPage({ params }: { params: Promise<{ id: st
   const margin = (Number(form.selling_price) && Number(form.current_cost))
     ? (((Number(form.selling_price) - Number(form.current_cost)) / Number(form.selling_price)) * 100).toFixed(1)
     : "0.0";
+
+  function updateVariant(variantId: string, values: Partial<ProductVariant>) {
+    setVariants((current) => current.map((variant) => variant.id === variantId ? { ...variant, ...values } : variant));
+  }
+
+  function addVariant() {
+    const sequence = String(variants.length + 1).padStart(2, "0");
+    const base = (form.barcode || form.internal_code || form.sku || Date.now().toString()).replace(/\D/g, "") || Date.now().toString();
+    setVariants((current) => [...current, {
+      id: `new-${crypto.randomUUID()}`,
+      product_id: id,
+      code: `${base}${sequence}00000`,
+      barcode: null,
+      sku: null,
+      color: null,
+      size: null,
+      label: "",
+      current_stock: 0,
+      minimum_stock: Number(form.minimum_stock || 0),
+      maximum_stock: Number(form.maximum_stock || 0),
+      current_cost: Number(form.current_cost || 0),
+      selling_price: Number(form.selling_price || 0),
+      physical_location: form.physical_location || null,
+      active: true,
+      sort_order: current.length,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }]);
+  }
+
+  async function removeVariant(variant: ProductVariant) {
+    if (!variant.id.startsWith("new-")) {
+      if (variant.current_stock > 0) {
+        setError("Zere ou transfira o estoque desta variante antes de removê-la.");
+        return;
+      }
+      await deleteProductVariant(variant.id);
+    }
+    setVariants((current) => current.filter((item) => item.id !== variant.id));
+  }
 
   return (
     <form onSubmit={submit} className="mx-auto max-w-5xl">
@@ -267,6 +340,30 @@ export default function EditarProdutoPage({ params }: { params: Promise<{ id: st
           </section>
 
           <section className="card p-6">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div><h2 className="text-lg font-bold text-slate-800">Variantes acopladas</h2><p className="mt-1 text-xs text-slate-500">As variantes pertencem a este produto e não aparecem como produtos separados no catálogo.</p></div>
+              <button type="button" className="btn btn-secondary" onClick={addVariant}><Plus className="h-4 w-4" /> Adicionar</button>
+            </div>
+            {!variants.length ? <p className="rounded-xl bg-slate-50 p-5 text-center text-sm text-slate-500">Produto sem variantes.</p> : (
+              <div className="grid gap-3">
+                {variants.map((variant) => (
+                  <div key={variant.id} className="grid gap-3 rounded-2xl border border-slate-200 p-4 sm:grid-cols-[1fr_1fr_1.2fr_1.3fr_auto]">
+                    <label><FieldLabel>Cor/tipo</FieldLabel><input className="field" value={variant.color || ""} onChange={(event) => updateVariant(variant.id, { color: event.target.value, label: [event.target.value, variant.size].filter(Boolean).join(" / ") })} /></label>
+                    <label><FieldLabel>Tamanho</FieldLabel><input className="field" value={variant.size || ""} onChange={(event) => updateVariant(variant.id, { size: event.target.value, label: [variant.color, event.target.value].filter(Boolean).join(" / ") })} /></label>
+                    <label><FieldLabel>Descrição</FieldLabel><input className="field" value={variant.label} onChange={(event) => updateVariant(variant.id, { label: event.target.value })} /></label>
+                    <label><FieldLabel>Código numérico</FieldLabel><input className="field font-mono" inputMode="numeric" value={variant.code} onChange={(event) => updateVariant(variant.id, { code: event.target.value.replace(/\D/g, "") })} /></label>
+                    <button type="button" className="icon-btn self-end text-red-500" onClick={() => void removeVariant(variant)}><Trash2 className="h-4 w-4" /></button>
+                    <label><FieldLabel>Preço</FieldLabel><input className="field" type="number" min={0} step="0.01" value={variant.selling_price} onChange={(event) => updateVariant(variant.id, { selling_price: Number(event.target.value) })} /></label>
+                    <label><FieldLabel>Custo</FieldLabel><input className="field" type="number" min={0} step="0.01" value={variant.current_cost} onChange={(event) => updateVariant(variant.id, { current_cost: Number(event.target.value) })} /></label>
+                    <label><FieldLabel>Estoque</FieldLabel><input className="field" type="number" min={0} value={variant.current_stock} onChange={(event) => updateVariant(variant.id, { current_stock: Number(event.target.value) })} /></label>
+                    <label><FieldLabel>Localização</FieldLabel><input className="field" value={variant.physical_location || ""} onChange={(event) => updateVariant(variant.id, { physical_location: event.target.value })} /></label>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="card p-6">
             <h2 className="text-lg font-bold flex items-center gap-2 mb-4 text-slate-800"><DollarSign className="w-5 h-5 text-emerald-500" /> Preço e Custos</h2>
             <div className="grid gap-4 sm:grid-cols-3">
               <div>
@@ -304,7 +401,8 @@ export default function EditarProdutoPage({ params }: { params: Promise<{ id: st
                 </div>
                 <div>
                   <FieldLabel>Estoque Atual</FieldLabel>
-                  <input type="number" name="current_stock" value={form.current_stock} onChange={handleChange} className="field font-bold text-blue-600" />
+                  <input type="number" name="current_stock" value={variants.length ? variants.reduce((total, variant) => total + Number(variant.current_stock || 0), 0) : form.current_stock} onChange={handleChange} disabled={variants.length > 0} className="field font-bold text-blue-600 disabled:bg-slate-100" />
+                  {variants.length > 0 && <p className="mt-1 text-[10px] text-slate-400">Calculado automaticamente pelas variantes.</p>}
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -341,6 +439,14 @@ export default function EditarProdutoPage({ params }: { params: Promise<{ id: st
                   <input type="text" name="cest" value={form.cest} onChange={handleChange} className="field font-mono text-sm" />
                 </div>
               </div>
+            </div>
+          </section>
+
+          <section className="card p-6">
+            <h2 className="text-lg font-bold mb-4 text-slate-800">Rastreabilidade</h2>
+            <div className="grid gap-3">
+              <label className="flex items-center gap-3"><input type="checkbox" checked={form.track_lots} onChange={(event) => setForm({ ...form, track_lots: event.target.checked })} /><span className="text-sm font-bold">Controlar lote no recebimento</span></label>
+              <label className="flex items-center gap-3"><input type="checkbox" checked={form.track_expiry} onChange={(event) => setForm({ ...form, track_expiry: event.target.checked, track_lots: event.target.checked || form.track_lots })} /><span className="text-sm font-bold">Controlar fabricação e validade</span></label>
             </div>
           </section>
 

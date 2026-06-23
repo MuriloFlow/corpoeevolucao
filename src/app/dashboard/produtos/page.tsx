@@ -24,12 +24,17 @@ export default function ProdutosPage() {
   const filtered = products.filter((p) => {
     if (filter === "active" && !p.active) return false;
     if (filter === "inactive" && p.active) return false;
-    if (filter === "low_stock" && p.current_stock > p.minimum_stock) return false;
+    if (filter === "low_stock" && p.current_stock > p.minimum_stock && !p.variants?.some((variant) => variant.current_stock <= variant.minimum_stock)) return false;
     if (!search) return true;
     const term = search.toLowerCase();
     return p.name.toLowerCase().includes(term) || 
            p.barcode?.includes(term) || 
-           p.sku?.toLowerCase().includes(term);
+           p.sku?.toLowerCase().includes(term) ||
+           p.variants?.some((variant) =>
+             variant.label.toLowerCase().includes(term)
+             || variant.code.includes(term)
+             || variant.sku?.toLowerCase().includes(term)
+           );
   });
 
   if (loading) {
@@ -118,6 +123,7 @@ export default function ProdutosPage() {
                             <small className="mt-1 flex items-center gap-2 truncate text-[10px] text-slate-500">
                               {p.barcode ? <span className="bg-slate-100 px-1.5 py-0.5 rounded font-mono">EAN: {p.barcode}</span> : null}
                               {p.sku ? <span className="bg-slate-100 px-1.5 py-0.5 rounded font-mono">SKU: {p.sku}</span> : null}
+                              {p.variants?.length ? <span className="rounded bg-blue-50 px-1.5 py-0.5 font-bold text-blue-600">{p.variants.length} variantes</span> : null}
                             </small>
                           </span>
                         </div>

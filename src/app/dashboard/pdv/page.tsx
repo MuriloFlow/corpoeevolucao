@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useRef } from "react";
 import { Search, ShoppingCart, Plus, Minus, Trash2, CreditCard, Banknote, QrCode, CheckCircle, Package, ScanLine, ArrowRight } from "lucide-react";
-import { getProducts, createSale, createSaleItem, updateProduct, createInventoryTransaction, createPixSale } from "@/lib/api";
+import { getProducts, expandProductsWithVariants, createSale, createSaleItem, updateProduct, updateProductVariant, createInventoryTransaction, createPixSale } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import type { Product } from "@/lib/types";
 import { formatCurrency } from "@/lib/utils";
@@ -36,7 +36,7 @@ export default function PdvPage() {
 
   const loadProducts = () => {
     getProducts()
-      .then(prods => setProducts(prods.filter(p => p.active)))
+      .then(prods => setProducts(expandProductsWithVariants(prods).filter(p => p.active)))
       .catch(console.error)
       .finally(() => setLoading(false));
   };
@@ -199,17 +199,25 @@ export default function PdvPage() {
       for (const item of cart) {
         await createSaleItem({
           sale_id: sale.id,
-          product_id: item.id,
+          product_id: item.parent_product_id || item.id,
+          variant_id: item.parent_product_id ? item.id : null,
+          batch_id: null,
           quantity: item.cart_quantity,
           unit_price: item.selling_price,
           total_price: item.selling_price * item.cart_quantity
         });
 
         const newStock = item.current_stock - item.cart_quantity;
-        await updateProduct(item.id, { current_stock: newStock });
+        if (item.parent_product_id) {
+          await updateProductVariant(item.id, { current_stock: newStock });
+        } else {
+          await updateProduct(item.id, { current_stock: newStock });
+        }
         
         await createInventoryTransaction({
-          product_id: item.id,
+          product_id: item.parent_product_id || item.id,
+          variant_id: item.parent_product_id ? item.id : null,
+          batch_id: null,
           transaction_type: "OUT",
           quantity: item.cart_quantity,
           previous_stock: item.current_stock,

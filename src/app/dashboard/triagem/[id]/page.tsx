@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getReceivingById, getReceivingItems, getProducts, updateReceiving, createReceivingItem, updateReceivingItem, deleteReceivingItem } from "@/lib/api";
 import type { Receiving, ReceivingItem, Product } from "@/lib/types";
-import { ErrorBanner, StatusBadge } from "@/components/ui";
+import { ErrorBanner, Modal, StatusBadge } from "@/components/ui";
 import { formatCurrency } from "@/lib/utils";
 
 export default function TriagemInterfacePage({ params }: { params: Promise<{ id: string }> }) {
@@ -21,6 +21,7 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
   const [error, setError] = useState<string | null>(null);
   const [scanValue, setScanValue] = useState("");
   const [lastScanned, setLastScanned] = useState<{ product: Product, quantity: number } | null>(null);
+  const [variantChoice, setVariantChoice] = useState<ReceivingItem[]>([]);
 
   const scanInputRef = useRef<HTMLInputElement>(null);
 
@@ -61,64 +62,59 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
   const totalExpectedByItems = items.reduce((sum, i) => sum + i.expected_quantity, 0);
   const isBlindReceipt = totalExpectedByItems === 0 && (receiving?.total_items || 0) > 0;
   
+  const registerItemScan = async (existingItem: ReceivingItem, product: Product) => {
+    try {
+      const newCheckedQty = existingItem.checked_quantity + 1;
+      const newStatus = isBlindReceipt ? "Conferido" : (newCheckedQty > existingItem.expected_quantity ? "Divergente" : (newCheckedQty === existingItem.expected_quantity ? "Conferido" : "Pendente"));
+      await updateReceivingItem(existingItem.id, { checked_quantity: newCheckedQty, status: newStatus });
+      setItems((current) => current.map((item) => item.id === existingItem.id ? { ...item, checked_quantity: newCheckedQty, status: newStatus } : item));
+      setLastScanned({ product, quantity: newCheckedQty });
+      setVariantChoice([]);
+      if (!isBlindReceipt && newCheckedQty > existingItem.expected_quantity) {
+        setError(`A quantidade de ${product.name}${existingItem.variant ? ` · ${existingItem.variant.label}` : ""} ultrapassou a NFe.`);
+      }
+    } catch {
+      setError("Erro ao registrar a bipagem no banco de dados.");
+    }
+  };
+
   const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!scanValue.trim() || !receiving) return;
-
     const barcode = scanValue.trim();
-    setScanValue(""); // Clear immediately for next scan
+    setScanValue("");
     setError(null);
-
-    // Find product in master catalog
-    const product = products.find(p => p.barcode === barcode || p.sku === barcode || p.internal_code === barcode);
-
+    const product = products.find((item) =>
+      item.barcode === barcode || item.primary_barcode === barcode || item.sku === barcode || item.internal_code === barcode
+    );
     if (!product) {
-      setError(`Código não reconhecido: ${barcode}. Produto não cadastrado no sistema.`);
+      setError(`Código principal não reconhecido: ${barcode}. A triagem não aceita código interno de variante.`);
       return;
     }
-
-    // Check if item is already in receiving_items
-    let existingItem = items.find(i => i.product_id === product.id);
-
-    try {
-      if (existingItem) {
-        const newCheckedQty = existingItem.checked_quantity + 1;
-        const newStatus = isBlindReceipt ? "Conferido" : (newCheckedQty > existingItem.expected_quantity ? "Divergente" : (newCheckedQty === existingItem.expected_quantity ? "Conferido" : "Pendente"));
-        
-        await updateReceivingItem(existingItem.id, {
-          checked_quantity: newCheckedQty,
-          status: newStatus
-        });
-        
-        setItems(items.map(i => i.id === existingItem!.id ? { ...i, checked_quantity: newCheckedQty, status: newStatus } : i));
-        setLastScanned({ product, quantity: newCheckedQty });
-        
-        if (!isBlindReceipt && newCheckedQty > existingItem.expected_quantity) {
-          setError(`Aviso: Quantidade conferida de ${product.name} ultrapassou a quantidade esperada na Nota Fiscal.`);
-        }
-      } else {
-        // Product belongs to another order or manual add (Blind receipt)
-        const newItem = await createReceivingItem({
-          receiving_id: receiving.id,
-          product_id: product.id,
-          expected_quantity: isBlindReceipt ? 0 : 0, 
-          checked_quantity: 1,
-          unit_cost: product.current_cost,
-          total_cost: product.current_cost,
-          status: isBlindReceipt ? "Conferido" : "Divergente"
-        });
-        
-        setItems([...items, { ...newItem, product }]);
-        setLastScanned({ product, quantity: 1 });
-        
-        if (!isBlindReceipt) {
-          setError(`Atenção: Produto ${product.name} não estava listado nesta Nota Fiscal.`);
-        }
-      }
-    } catch (err) {
-      console.error(err);
-      setError("Erro ao registrar a bipagem no banco de dados.");
+    const candidates = items.filter((item) => item.product_id === product.id);
+    if (candidates.length > 1) {
+      setVariantChoice(candidates);
+      return;
     }
+    if (candidates.length === 1) {
+      await registerItemScan(candidates[0], product);
+      return;
+    }
+    const newItem = await createReceivingItem({
+      receiving_id: receiving.id,
+      product_id: product.id,
+      variant_id: null,
+      expected_quantity: 0,
+      checked_quantity: 1,
+      unit_cost: product.current_cost,
+      total_cost: product.current_cost,
+      status: isBlindReceipt ? "Conferido" : "Divergente",
+      lot_number: null,
+      manufacturing_date: null,
+      expiry_date: null,
+    });
+    setItems((current) => [...current, { ...newItem, product }]);
+    setLastScanned({ product, quantity: 1 });
   };
 
   const handleUpdateQty = async (itemId: string, newQty: number) => {
@@ -311,8 +307,9 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
                                 </div>
                               )}
                               <div className="truncate max-w-[250px]">
-                                <strong className={`block text-xs ${isComplete ? 'text-slate-500' : 'text-slate-900'}`}>{item.product?.name}</strong>
-                                <small className="text-[10px] text-slate-400 font-mono">{item.product?.barcode || item.product?.sku}</small>
+                                <strong className={`block text-xs ${isComplete ? 'text-slate-500' : 'text-slate-900'}`}>{item.product?.name}{item.variant ? ` · ${item.variant.label}` : ""}</strong>
+                                <small className="text-[10px] text-slate-400 font-mono">{item.variant?.code || item.product?.barcode || item.product?.sku}</small>
+                                {(item.lot_number || item.expiry_date) && <small className="mt-0.5 block text-[10px] text-slate-400">{item.lot_number ? `Lote ${item.lot_number}` : "Sem lote"}{item.expiry_date ? ` · Val. ${item.expiry_date}` : ""}</small>}
                               </div>
                             </div>
                           </td>
@@ -353,6 +350,22 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
         </div>
 
       </div>
+
+      <Modal open={variantChoice.length > 0} onClose={() => setVariantChoice([])} title="Qual variante foi conferida?" description="O código principal foi identificado. Selecione a cor, tamanho ou apresentação recebida." size="sm">
+        <div className="grid gap-2">
+          {variantChoice.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              className="flex items-center justify-between rounded-xl border border-slate-200 p-4 text-left transition hover:border-blue-400 hover:bg-blue-50"
+              onClick={() => item.product && void registerItemScan(item, item.product)}
+            >
+              <span><strong className="block text-sm text-slate-900">{item.variant?.label || "Produto único"}</strong><small className="mt-1 block font-mono text-xs text-slate-400">{item.variant?.code || item.product?.barcode}</small></span>
+              <span className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{item.checked_quantity}/{item.expected_quantity}</span>
+            </button>
+          ))}
+        </div>
+      </Modal>
     </div>
   );
 }

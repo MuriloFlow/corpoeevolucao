@@ -87,23 +87,6 @@ export async function createPasswordSetupLink(admin: SupabaseClient, email: stri
 }
 
 export async function ensurePendingContractForStudent(admin: SupabaseClient, studentId: string): Promise<PendingContractInfo | null> {
-  const { data: pendingContract } = await admin
-    .from("contracts")
-    .select("id, created_at, plan:plans(name)")
-    .eq("student_id", studentId)
-    .eq("status", "pending")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (pendingContract) {
-    return {
-      id: pendingContract.id,
-      planName: readPlanName(pendingContract.plan),
-      created: false,
-    };
-  }
-
   const { data: enrollment } = await admin
     .from("enrollments")
     .select("id, plan_id, plan:plans(name)")
@@ -114,6 +97,13 @@ export async function ensurePendingContractForStudent(admin: SupabaseClient, stu
     .maybeSingle();
 
   if (!enrollment) return null;
+
+  await admin
+    .from("contracts")
+    .update({ status: "cancelled" })
+    .eq("student_id", studentId)
+    .eq("status", "pending")
+    .neq("enrollment_id", enrollment.id);
 
   const { data: existingContract } = await admin
     .from("contracts")

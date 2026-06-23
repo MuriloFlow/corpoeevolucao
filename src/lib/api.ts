@@ -7,7 +7,8 @@ import { getDeviceId } from "@/lib/device-id";
 import type {
   AuditLog, Checkin, ClassBooking, ClassSession, ClassType, Contract, DashboardStats, Enrollment, LocalTables, NewRow,
   Notification, Payment, Plan, Profile, RevenuePoint, Student, StudioSettings, TableName, Product, Supplier,
-  Receiving, ReceivingItem, Sale, SaleItem, InventoryTransaction, ClassSchedule, StudentClass, ClassAttendance
+  Receiving, ReceivingItem, Sale, SaleItem, InventoryTransaction, ClassSchedule, StudentClass, ClassAttendance,
+  ClassOccurrenceAudit, ClassOccurrenceStatus, ProductVariant, StockBatch
 } from "@/lib/types";
 import { generateMatriculaNumber } from "@/lib/utils";
 
@@ -264,7 +265,9 @@ export async function deleteStudent(id: string) {
 }
 
 export async function getPlans(): Promise<Plan[]> {
-  return (await list("plans")).sort((a, b) => Number(a.price) - Number(b.price));
+  return (await list("plans"))
+    .filter((plan) => !plan.deleted_at)
+    .sort((a, b) => Number(a.price) - Number(b.price));
 }
 
 export async function savePlan(values: Partial<Plan> & Pick<Plan, "name" | "price" | "duration_days">) {
@@ -277,6 +280,7 @@ export async function savePlan(values: Partial<Plan> & Pick<Plan, "name" | "pric
     weekly_limit: Number(values.weekly_limit ?? 7),
     color: values.color ?? "#1a73e8",
     active: values.active ?? true,
+    deleted_at: null,
   });
 }
 
@@ -401,45 +405,41 @@ export async function editEnrollment(id: string, values: {
   }
 
   if (!plan) throw new Error("Plano nÃ£o encontrado.");
-  const end = new Date(`${values.start_date}T12:00:00`);
+  const current = shouldUseLocalData()
+    ? localDB.find("enrollments", id)
+    : ((await supabase.from("enrollments").select("*").eq("id", id).maybeSingle()).data as LocalTables["enrollments"] | null);
+  if (!current) throw new Error("Matrícula não encontrada.");
+
+  const existingPayments = shouldUseLocalData()
+    ? localDB.get("payments").filter((payment) => payment.enrollment_id === id)
+    : (((await supabase.from("payments").select("*").eq("enrollment_id", id)).data ?? []) as LocalTables["payments"][]);
+  const hasPaidCycle = existingPayments.some((payment) => payment.status === "paid");
+  const effectiveStartDate = hasPaidCycle ? current.start_date : values.start_date;
+  const end = new Date(`${effectiveStartDate}T12:00:00`);
   end.setDate(end.getDate() + plan.duration_days);
+  const effectiveEndDate = hasPaidCycle ? current.end_date : end.toISOString().slice(0, 10);
+  const planChanged = current.plan_id !== finalPlanId;
 
   const plain = await update("enrollments", id, {
     plan_id: finalPlanId,
-    start_date: values.start_date,
-    end_date: end.toISOString().slice(0, 10),
+    start_date: effectiveStartDate,
+    end_date: effectiveEndDate,
   });
 
-  // Atualizar pagamentos pendentes OU criar novo se nenhum existir
-  let hasPendingPayment = false;
-  if (!shouldUseLocalData()) {
-    const { data: payments } = await supabase.from("payments").select("*").eq("enrollment_id", id).eq("status", "pending");
-    if (payments && payments.length > 0) {
-      hasPendingPayment = true;
-      for (const pay of payments) {
-        await update("payments", pay.id, {
-          amount: Number(plan.price),
-          total_amount: Number(plan.price),
-          due_date: values.start_date
-        });
-      }
-    }
-  } else {
-    const payments = localDB.get("payments").filter((p) => p.enrollment_id === id && p.status === "pending");
-    if (payments.length > 0) {
-      hasPendingPayment = true;
-      for (const pay of payments) {
-        await update("payments", pay.id, {
-          amount: Number(plan.price),
-          total_amount: Number(plan.price),
-          due_date: values.start_date
-        });
-      }
-    }
+  const pendingPayments = existingPayments.filter((payment) => payment.status === "pending");
+  for (const payment of pendingPayments) {
+    const preservedAdjustments = Number(payment.discount || 0) - Number(payment.fine || 0);
+    await update("payments", payment.id, {
+      amount: Number(plan.price),
+      total_amount: Math.max(0, Number(plan.price) - preservedAdjustments),
+      due_date: hasPaidCycle ? payment.due_date : effectiveStartDate,
+    });
   }
 
-  // Se nÃ£o tinha nenhum pagamento pendente, criar um novo (garante que financeiro nunca fica vazio)
-  if (!hasPendingPayment) {
+  const hasOperationalPayment = existingPayments.some((payment) =>
+    ["pending", "paid", "expired"].includes(payment.status),
+  );
+  if (!hasOperationalPayment) {
     await insert("payments", {
       reference: `MEN-${Date.now().toString().slice(-8)}`,
       student_id: plain.student_id,
@@ -450,8 +450,25 @@ export async function editEnrollment(id: string, values: {
       total_amount: Number(plan.price),
       status: "pending",
       method: null,
-      due_date: values.start_date,
+      due_date: effectiveStartDate,
       paid_at: null,
+    });
+  }
+
+  if (planChanged) {
+    const contracts = shouldUseLocalData()
+      ? localDB.get("contracts").filter((contract) => contract.enrollment_id === id)
+      : (((await supabase.from("contracts").select("*").eq("enrollment_id", id)).data ?? []) as LocalTables["contracts"][]);
+    for (const contract of contracts.filter((item) => item.status === "pending")) {
+      await update("contracts", contract.id, { status: "cancelled" });
+    }
+    await insert("contracts", {
+      student_id: plain.student_id,
+      plan_id: finalPlanId,
+      enrollment_id: plain.id,
+      document_text: `Termo de adesão ao plano ${plan.name}.`,
+      status: "pending",
+      signed_at: null,
     });
   }
   
@@ -844,7 +861,7 @@ export async function signContract(id: string) {
 export async function updateContractStatus(id: string, status: Contract["status"]) {
   return update("contracts", id, {
     status,
-    ...(status === "pending" ? { signed_at: null, ip_address: null } : {}),
+    ...(status === "pending" ? { signed_at: null, ip_address: null, signature_data: null } : {}),
   });
 }
 
@@ -1246,6 +1263,64 @@ export async function updateAttendanceStatus(attendanceOrId: string | ClassAtten
 
   return update("class_attendances", id, { status });
 }
+
+export async function getAttendanceHistory(days = 120): Promise<ClassOccurrenceAudit[]> {
+  if (shouldUseLocalData()) {
+    const schedules = await getClassSchedules();
+    const scheduleMap = new Map(schedules.map((schedule) => [schedule.id, schedule]));
+    const grouped = new Map<string, ClassOccurrenceAudit>();
+    for (const attendance of localDB.get("class_attendances")) {
+      const key = `${attendance.class_schedule_id}:${attendance.date}`;
+      const current = grouped.get(key) ?? {
+        class_schedule_id: attendance.class_schedule_id,
+        date: attendance.date,
+        status: "normal",
+        class_schedule: scheduleMap.get(attendance.class_schedule_id) ?? null,
+        attendance_total: 0,
+        confirmed_total: 0,
+        missed_total: 0,
+      };
+      current.attendance_total = (current.attendance_total ?? 0) + 1;
+      if (["confirmed", "attended"].includes(attendance.status)) current.confirmed_total = (current.confirmed_total ?? 0) + 1;
+      if (["cancelled", "missed"].includes(attendance.status)) current.missed_total = (current.missed_total ?? 0) + 1;
+      grouped.set(key, current);
+    }
+    return [...grouped.values()].sort((a, b) => `${b.date}${b.class_schedule?.time || ""}`.localeCompare(`${a.date}${a.class_schedule?.time || ""}`));
+  }
+
+  const { data: session } = await supabase.auth.getSession();
+  const response = await fetch(`/api/admin/attendances/history?days=${days}`, {
+    headers: { Authorization: `Bearer ${session.session?.access_token ?? ""}` },
+    cache: "no-store",
+  });
+  const payload = await response.json() as { occurrences?: ClassOccurrenceAudit[]; error?: string };
+  if (!response.ok) throw new Error(payload.error ?? "Não foi possível carregar o histórico de presenças.");
+  return payload.occurrences ?? [];
+}
+
+export async function auditClassOccurrence(values: {
+  classScheduleId: string;
+  date: string;
+  status: ClassOccurrenceStatus;
+  reason: string;
+}) {
+  if (shouldUseLocalData()) {
+    throw new Error("A auditoria de aulas exige o banco Supabase configurado.");
+  }
+  const { data: session } = await supabase.auth.getSession();
+  const response = await fetch("/api/admin/attendances/history", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.session?.access_token ?? ""}`,
+    },
+    body: JSON.stringify(values),
+  });
+  const payload = await response.json() as { occurrence?: ClassOccurrenceAudit; error?: string };
+  if (!response.ok) throw new Error(payload.error ?? "Não foi possível auditar esta aula.");
+  notifyDbChange();
+  return payload.occurrence;
+}
 export async function linkStudentToClasses(studentId: string, classScheduleIds: string[]) {
   const uniqueClassScheduleIds = [...new Set(classScheduleIds.filter(Boolean))];
   if (!shouldUseLocalData()) {
@@ -1317,11 +1392,14 @@ const productVariantSchemaFields = new Set([
   "variant_size",
   "variant_label",
   "primary_barcode",
+  "has_variants",
+  "track_lots",
+  "track_expiry",
 ]);
 
 function isMissingProductVariantSchema(error: unknown) {
   const message = error instanceof Error ? error.message : String(error || "");
-  return /schema cache|PGRST204|parent_product_id|variant_color|variant_size|variant_label|primary_barcode/i.test(message);
+  return /schema cache|PGRST204|parent_product_id|variant_color|variant_size|variant_label|primary_barcode|has_variants|track_lots|track_expiry/i.test(message);
 }
 
 function stripProductVariantColumns<T extends Record<string, unknown>>(values: T) {
@@ -1338,24 +1416,165 @@ export async function getProducts(): Promise<Product[]> {
   if (!shouldUseLocalData()) {
     const { data, error } = await supabase
       .from("products")
+      .select("*, supplier:suppliers(*), variants:product_variants(*)")
+      .is("parent_product_id", null)
+      .order("created_at", { ascending: false });
+    if (!error) {
+      return (data ?? []).map((product: any) => {
+        const variants = [...(product.variants ?? [])].sort((a, b) => a.sort_order - b.sort_order);
+        return {
+          ...product,
+          variants,
+          has_variants: Boolean(product.has_variants || variants.length),
+          current_stock: variants.length
+            ? variants.reduce((total: number, variant: ProductVariant) => total + Number(variant.current_stock || 0), 0)
+            : Number(product.current_stock || 0),
+        } as Product;
+      });
+    }
+
+    const { data: legacy, error: legacyError } = await supabase
+      .from("products")
       .select("*, supplier:suppliers(*)")
       .order("created_at", { ascending: false });
-    if (error) throw new Error(error.message);
-    return (data ?? []) as Product[];
+    if (legacyError) throw new Error(legacyError.message);
+    const rows = (legacy ?? []) as Product[];
+    const roots = rows.filter((product) => !product.parent_product_id);
+    return roots.map((product) => {
+      const children = rows.filter((child) => child.parent_product_id === product.id);
+      const variants = children.map((child, index) => ({
+        id: child.id,
+        product_id: product.id,
+        code: child.barcode || child.sku || child.internal_code || child.id,
+        barcode: child.barcode,
+        sku: child.sku,
+        color: child.variant_color,
+        size: child.variant_size,
+        label: child.variant_label || [child.variant_color, child.variant_size].filter(Boolean).join(" / ") || child.name,
+        current_stock: child.current_stock,
+        minimum_stock: child.minimum_stock,
+        maximum_stock: child.maximum_stock,
+        current_cost: child.current_cost,
+        selling_price: child.selling_price,
+        physical_location: child.physical_location,
+        active: child.active,
+        sort_order: index,
+        created_at: child.created_at,
+        updated_at: child.updated_at,
+      } satisfies ProductVariant));
+      return {
+        ...product,
+        variants,
+        has_variants: variants.length > 0,
+        current_stock: variants.length
+          ? variants.reduce((total, variant) => total + Number(variant.current_stock || 0), 0)
+          : product.current_stock,
+      };
+    });
   }
   const products = localDB.get("products");
+  const variants = localDB.get("product_variants");
   const suppliers = localDB.get("suppliers");
-  return sortDesc(products).map(p => ({
-    ...p,
-    supplier: relation(suppliers, p.supplier_id)
-  }));
+  return sortDesc(products)
+    .filter((product) => !product.parent_product_id)
+    .map((product) => {
+      const productVariants = variants
+        .filter((variant) => variant.product_id === product.id)
+        .sort((a, b) => a.sort_order - b.sort_order);
+      return {
+        ...product,
+        supplier: relation(suppliers, product.supplier_id),
+        variants: productVariants,
+        has_variants: productVariants.length > 0,
+        current_stock: productVariants.length
+          ? productVariants.reduce((total, variant) => total + variant.current_stock, 0)
+          : product.current_stock,
+      };
+    });
 }
 
 export async function getProductById(id: string): Promise<Product | null> {
-  if (shouldUseLocalData()) return localDB.find("products", id);
-  const { data, error } = await supabase.from("products").select("*, supplier:suppliers(*)").eq("id", id).maybeSingle();
-  if (error) throw new Error(error.message);
-  return data as Product | null;
+  if (shouldUseLocalData()) {
+    const product = localDB.find("products", id);
+    if (!product) return null;
+    const variants = localDB.get("product_variants").filter((variant) => variant.product_id === id);
+    return { ...product, variants, has_variants: variants.length > 0 };
+  }
+  const { data, error } = await supabase
+    .from("products")
+    .select("*, supplier:suppliers(*), variants:product_variants(*)")
+    .eq("id", id)
+    .maybeSingle();
+  if (!error) return data ? ({ ...data, variants: data.variants ?? [] } as Product) : null;
+  const fallback = await supabase.from("products").select("*, supplier:suppliers(*)").eq("id", id).maybeSingle();
+  if (fallback.error) throw new Error(fallback.error.message);
+  if (!fallback.data) return null;
+  const { data: children } = await supabase.from("products").select("*").eq("parent_product_id", id).order("created_at");
+  const variants = ((children ?? []) as Product[]).map((child, index) => ({
+    id: child.id,
+    product_id: id,
+    code: child.barcode || child.sku || child.internal_code || child.id,
+    barcode: child.barcode,
+    sku: child.sku,
+    color: child.variant_color,
+    size: child.variant_size,
+    label: child.variant_label || [child.variant_color, child.variant_size].filter(Boolean).join(" / ") || child.name,
+    current_stock: child.current_stock,
+    minimum_stock: child.minimum_stock,
+    maximum_stock: child.maximum_stock,
+    current_cost: child.current_cost,
+    selling_price: child.selling_price,
+    physical_location: child.physical_location,
+    active: child.active,
+    sort_order: index,
+    created_at: child.created_at,
+    updated_at: child.updated_at,
+  } satisfies ProductVariant));
+  return { ...(fallback.data as Product), variants, has_variants: variants.length > 0 };
+}
+
+export async function createProductVariant(values: Omit<NewRow<"product_variants">, "updated_at">) {
+  return insert("product_variants", { ...values, updated_at: new Date().toISOString() });
+}
+
+export async function updateProductVariant(id: string, values: Partial<ProductVariant>) {
+  return update("product_variants", id, { ...values, updated_at: new Date().toISOString() });
+}
+
+export async function deleteProductVariant(id: string) {
+  return remove("product_variants", id);
+}
+
+export function productVariantAsProduct(product: Product, variant: ProductVariant): Product {
+  return {
+    ...product,
+    id: variant.id,
+    parent_product_id: product.id,
+    primary_barcode: product.barcode || product.primary_barcode || product.internal_code || product.sku,
+    barcode: variant.code,
+    sku: variant.sku,
+    internal_code: variant.code,
+    name: `${product.name} ${variant.label}`.trim(),
+    variant_color: variant.color,
+    variant_size: variant.size,
+    variant_label: variant.label,
+    current_stock: variant.current_stock,
+    minimum_stock: variant.minimum_stock,
+    maximum_stock: variant.maximum_stock,
+    current_cost: variant.current_cost,
+    selling_price: variant.selling_price,
+    physical_location: variant.physical_location || product.physical_location,
+    variants: undefined,
+    has_variants: false,
+  };
+}
+
+export function expandProductsWithVariants(products: Product[]) {
+  return products.flatMap((product) =>
+    product.variants?.length
+      ? product.variants.map((variant) => productVariantAsProduct(product, variant))
+      : [product],
+  );
 }
 
 export async function createProduct(values: Omit<NewRow<"products">, "updated_at">): Promise<Product> {
@@ -1452,7 +1671,7 @@ export async function getReceivingItems(receiving_id: string): Promise<Receiving
   if (!shouldUseLocalData()) {
     const { data, error } = await supabase
       .from("receiving_items")
-      .select("*, product:products(*)")
+      .select("*, product:products(*), variant:product_variants(*)")
       .eq("receiving_id", receiving_id)
       .order("created_at", { ascending: true });
     if (error) throw new Error(error.message);
@@ -1460,9 +1679,11 @@ export async function getReceivingItems(receiving_id: string): Promise<Receiving
   }
   const items = localDB.get("receiving_items").filter(i => i.receiving_id === receiving_id);
   const products = localDB.get("products");
+  const variants = localDB.get("product_variants");
   return items.map(i => ({
     ...i,
-    product: relation(products, i.product_id)
+    product: relation(products, i.product_id),
+    variant: relation(variants, i.variant_id),
   }));
 }
 
@@ -1470,7 +1691,7 @@ export async function getInventoryTransactions(): Promise<any[]> {
   if (!shouldUseLocalData()) {
     const { data, error } = await supabase
       .from("inventory_transactions")
-      .select("*, product:products(*)")
+      .select("*, product:products(*), variant:product_variants(*)")
       .order("created_at", { ascending: false })
       .limit(100);
     if (error) throw new Error(error.message);
@@ -1478,9 +1699,11 @@ export async function getInventoryTransactions(): Promise<any[]> {
   }
   const transactions = localDB.get("inventory_transactions");
   const products = localDB.get("products");
+  const variants = localDB.get("product_variants");
   return sortDesc(transactions).map(t => ({
     ...t,
-    product: relation(products, t.product_id)
+    product: relation(products, t.product_id),
+    variant: relation(variants, t.variant_id),
   })).slice(0, 100);
 }
 
@@ -1506,6 +1729,21 @@ export async function updateReceivingItem(id: string, values: Partial<NewRow<"re
 
 export async function createInventoryTransaction(values: any) {
   return insert("inventory_transactions", values);
+}
+
+export async function createStockBatch(values: Omit<NewRow<"stock_batches">, "updated_at">): Promise<StockBatch> {
+  return insert("stock_batches", { ...values, updated_at: new Date().toISOString() });
+}
+
+export async function getStockBatches(productId?: string): Promise<StockBatch[]> {
+  if (shouldUseLocalData()) {
+    return sortDesc(localDB.get("stock_batches").filter((batch) => !productId || batch.product_id === productId));
+  }
+  let query = supabase.from("stock_batches").select("*").order("created_at", { ascending: false });
+  if (productId) query = query.eq("product_id", productId);
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return (data ?? []) as StockBatch[];
 }
 
 export async function createSale(values: NewRow<"sales">) {
@@ -1536,29 +1774,25 @@ export async function updatePlan(id: string, values: Partial<Plan>) {
 }
 
 export async function deletePlan(id: string) {
-  // Check for FK constraints before deleting
   if (!shouldUseLocalData()) {
     const { count } = await supabase
       .from("enrollments")
       .select("*", { count: "exact", head: true })
-      .eq("plan_id", id);
+      .eq("plan_id", id)
+      .in("status", ["active", "suspended"]);
     if (count && count > 0) {
-      throw new Error("NÃ£o Ã© possÃ­vel excluir este plano porque existem matrÃ­culas vinculadas. Mude a situaÃ§Ã£o para Inativo.");
+      throw new Error("Este plano ainda possui matrícula ativa ou suspensa. Troque o plano desses alunos antes de excluí-lo.");
     }
-    const { count: contractCount } = await supabase
-      .from("contracts")
-      .select("*", { count: "exact", head: true })
-      .eq("plan_id", id);
-    if (contractCount && contractCount > 0) {
-      throw new Error("NÃ£o Ã© possÃ­vel excluir este plano porque existem contratos vinculados. Mude a situaÃ§Ã£o para Inativo.");
-    }
+    return update("plans", id, { active: false, deleted_at: new Date().toISOString() });
   } else {
-    const enrollments = localDB.get("enrollments").filter(e => e.plan_id === id);
+    const enrollments = localDB.get("enrollments").filter((enrollment) =>
+      enrollment.plan_id === id && ["active", "suspended"].includes(enrollment.status),
+    );
     if (enrollments.length > 0) {
-      throw new Error("NÃ£o Ã© possÃ­vel excluir este plano porque existem matrÃ­culas vinculadas. Mude a situaÃ§Ã£o para Inativo.");
+      throw new Error("Este plano ainda possui matrícula ativa ou suspensa. Troque o plano desses alunos antes de excluí-lo.");
     }
+    return update("plans", id, { active: false, deleted_at: new Date().toISOString() });
   }
-  return remove("plans", id);
 }
 
 export async function updateSupplier(id: string, values: any) {

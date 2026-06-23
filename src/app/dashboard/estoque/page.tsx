@@ -2,14 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { Package, ArrowDownRight, ArrowUpRight, AlertTriangle, Search, Activity, DollarSign, Settings2, Plus, Minus, Save } from "lucide-react";
-import { getProducts, getInventoryTransactions, createInventoryTransaction, updateProduct } from "@/lib/api";
-import type { Product } from "@/lib/types";
+import { getProducts, expandProductsWithVariants, getInventoryTransactions, getStockBatches, createInventoryTransaction, updateProduct, updateProductVariant } from "@/lib/api";
+import type { Product, StockBatch } from "@/lib/types";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Modal, ErrorBanner, FieldLabel } from "@/components/ui";
 
 export default function EstoquePage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [batches, setBatches] = useState<StockBatch[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -26,10 +27,12 @@ export default function EstoquePage() {
     setLoading(true);
     Promise.all([
       getProducts(),
-      getInventoryTransactions()
-    ]).then(([prods, trans]) => {
-      setProducts(prods);
+      getInventoryTransactions(),
+      getStockBatches(),
+    ]).then(([prods, trans, nextBatches]) => {
+      setProducts(expandProductsWithVariants(prods));
       setTransactions(trans);
+      setBatches(nextBatches);
     }).finally(() => setLoading(false));
   };
 
@@ -66,10 +69,16 @@ export default function EstoquePage() {
         ? product.current_stock + qty 
         : product.current_stock - qty;
 
-      await updateProduct(product.id, { current_stock: newStock });
+      if (product.parent_product_id) {
+        await updateProductVariant(product.id, { current_stock: newStock });
+      } else {
+        await updateProduct(product.id, { current_stock: newStock });
+      }
       
       await createInventoryTransaction({
-        product_id: product.id,
+        product_id: product.parent_product_id || product.id,
+        variant_id: product.parent_product_id ? product.id : null,
+        batch_id: null,
         transaction_type: adjustForm.type,
         quantity: qty,
         previous_stock: product.current_stock,
@@ -95,6 +104,13 @@ export default function EstoquePage() {
   const lowStock = products.filter(p => p.current_stock > 0 && p.current_stock <= p.minimum_stock).length;
 
   const criticalProducts = products.filter(p => p.current_stock <= p.minimum_stock).sort((a, b) => a.current_stock - b.current_stock);
+  const expiryLimit = new Date();
+  expiryLimit.setDate(expiryLimit.getDate() + 30);
+  const expiryLimitKey = expiryLimit.toISOString().slice(0, 10);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const expiringBatches = batches
+    .filter((batch) => batch.available_quantity > 0 && batch.expiry_date && batch.expiry_date <= expiryLimitKey)
+    .sort((a, b) => String(a.expiry_date).localeCompare(String(b.expiry_date)));
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -227,6 +243,13 @@ export default function EstoquePage() {
           </div>
         </section>
       </div>
+
+      {expiringBatches.length > 0 && (
+        <section className="card mt-6 overflow-hidden">
+          <div className="border-b border-slate-100 p-5"><h2 className="flex items-center gap-2 font-bold text-slate-800"><AlertTriangle className="h-5 w-5 text-orange-500" /> Lotes vencidos ou próximos do vencimento</h2><p className="mt-1 text-xs text-slate-500">Priorize a saída pelo método FEFO: o lote que vence primeiro deve sair primeiro.</p></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Lote</th><th>Validade</th><th className="text-right">Disponível</th><th>Status</th></tr></thead><tbody>{expiringBatches.map((batch) => <tr key={batch.id}><td className="font-mono text-xs">{batch.lot_number || "Sem identificação"}</td><td>{batch.expiry_date ? formatDate(batch.expiry_date) : "-"}</td><td className="text-right font-bold">{batch.available_quantity}</td><td><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${String(batch.expiry_date) < todayKey ? "bg-red-100 text-red-700" : "bg-orange-100 text-orange-700"}`}>{String(batch.expiry_date) < todayKey ? "Vencido" : "Vence em até 30 dias"}</span></td></tr>)}</tbody></table></div>
+        </section>
+      )}
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Ajuste Manual de Estoque" size="md">
         <form onSubmit={handleAdjustSubmit} className="py-4 space-y-4">

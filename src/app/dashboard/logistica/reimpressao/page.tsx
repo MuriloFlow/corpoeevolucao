@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Barcode, CheckCircle2, ClipboardList, Eraser, Layers3, PackageCheck, PackageSearch, Printer, RadioTower, RotateCcw, ScanBarcode, Search, Settings2, Tag, Usb, Zap } from "lucide-react";
-import { getProducts } from "@/lib/api";
+import { expandProductsWithVariants, getProducts } from "@/lib/api";
 import {
   LABEL_SIZES,
   getLabelProductMeta,
@@ -197,7 +197,7 @@ export default function ReimpressaoEtiquetasPage() {
 
   useEffect(() => {
     getProducts()
-      .then((data) => setProducts(data))
+      .then((data) => setProducts(expandProductsWithVariants(data)))
       .catch((err) => setError(err instanceof Error ? err.message : "Nao foi possivel carregar os produtos."))
       .finally(() => setLoading(false));
   }, []);

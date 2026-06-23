@@ -132,6 +132,15 @@ export async function POST(request: Request) {
 
     const enrollment = student ? await resolveCurrentEnrollment(admin, student.id) : null;
     const payment = enrollment ? await resolveCurrentPayment(admin, enrollment.id) : null;
+    const { data: currentContract } = enrollment
+      ? await admin
+          .from("contracts")
+          .select("id, status, created_at")
+          .eq("enrollment_id", enrollment.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      : { data: null };
 
     const today = todayDate();
     const enrollmentExpired = Boolean(enrollment?.end_date && enrollment.end_date < today);
@@ -163,6 +172,8 @@ export async function POST(request: Request) {
                   ? "Pagamento pendente. Receba o pagamento na recepcao antes de liberar a catraca."
                   : payment.status !== "paid"
                     ? "Pagamento nao confirmado. Acesso bloqueado."
+                    : !currentContract || currentContract.status !== "signed"
+                      ? "Contrato pendente de assinatura. Assine no portal antes de liberar a catraca."
                     : null;
 
     let allowed = !reason;

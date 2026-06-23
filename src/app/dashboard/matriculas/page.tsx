@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, BookOpen, CalendarDays, Check, CheckCircle2, Clock3, PauseCircle, Plus, RotateCcw, Trash2, UserRound } from "lucide-react";
+import { Activity, BookOpen, CalendarDays, Check, CheckCircle2, Clock3, PauseCircle, Plus, RotateCcw, Search, Trash2, UserRound, X } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { EmptyState, ErrorBanner, FieldLabel, LoadingState, Modal, PageHeader, SearchInput, StatusBadge } from "@/components/ui";
 import { createEnrollment, deleteEnrollment, editEnrollment, getClassSchedules, getClassTypes, getEnrollments, getPlans, getStudentClasses, getStudents, linkStudentToClasses, updateEnrollmentStatus } from "@/lib/api";
@@ -31,6 +31,8 @@ export default function MatriculasPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<"all" | EnrollmentStatus>("all");
+  const [studentSearch, setStudentSearch] = useState("");
+  const [studentPickerOpen, setStudentPickerOpen] = useState(false);
 
   const [classesModalOpen, setClassesModalOpen] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
@@ -73,6 +75,19 @@ export default function MatriculasPage() {
     () => students.find((student) => student.id === selectedStudentId) ?? null,
     [selectedStudentId, students],
   );
+  const formStudent = useMemo(
+    () => students.find((student) => student.id === form.student_id) ?? null,
+    [form.student_id, students],
+  );
+  const matchingStudents = useMemo(() => {
+    const term = studentSearch.trim().toLocaleLowerCase("pt-BR");
+    const digits = term.replace(/\D/g, "");
+    return students
+      .filter((student) => !term
+        || student.full_name.toLocaleLowerCase("pt-BR").includes(term)
+        || (digits.length >= 3 && student.cpf.replace(/\D/g, "").includes(digits)))
+      .slice(0, 30);
+  }, [studentSearch, students]);
   const classTypesById = useMemo(
     () => new Map(availableClassTypes.map((type) => [type.id, type])),
     [availableClassTypes],
@@ -106,12 +121,16 @@ export default function MatriculasPage() {
       plan_id: [item.plan_id],
       start_date: item.start_date,
     });
+    setStudentSearch(item.student?.full_name || "");
+    setStudentPickerOpen(false);
     setOpen(true);
   }
 
   function openCreate() {
     setEditId(null);
     setForm(emptyForm);
+    setStudentSearch("");
+    setStudentPickerOpen(false);
     setOpen(true);
   }
 
@@ -261,7 +280,70 @@ export default function MatriculasPage() {
       <Modal open={open} onClose={handleCloseModal} title={editId ? "Editar matrícula" : "Nova matrícula"} description={editId ? "Atualize os planos e a vigência." : "A cobrança inicial e o contrato serão gerados automaticamente."}>
         <form className="grid gap-4" onSubmit={submit}>
           <ErrorBanner message={error} />
-          <label><FieldLabel required>Aluno</FieldLabel><select className="field" required value={form.student_id} onChange={(event) => setForm({ ...form, student_id: event.target.value })} disabled={!!editId}><option value="">Selecione um aluno</option>{students.map((student) => <option value={student.id} key={student.id}>{student.full_name}</option>)}</select></label>
+          <div>
+            <FieldLabel required>Aluno</FieldLabel>
+            {editId ? (
+              <div className="field flex items-center gap-3 bg-slate-50">
+                <UserRound className="h-4 w-4 text-blue-600" />
+                <span className="truncate font-semibold text-slate-700">{formStudent?.full_name || "Aluno"}</span>
+              </div>
+            ) : (
+              <div className="relative">
+                <div className={`flex min-h-11 items-center gap-2 rounded-xl border bg-white px-3 transition ${studentPickerOpen ? "border-blue-500 ring-4 ring-blue-500/10" : "border-[#d8dee9]"}`}>
+                  <Search className="h-4 w-4 shrink-0 text-slate-400" />
+                  <input
+                    className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-800 outline-none placeholder:font-normal placeholder:text-slate-400"
+                    value={studentSearch}
+                    onFocus={() => setStudentPickerOpen(true)}
+                    onChange={(event) => {
+                      setStudentSearch(event.target.value);
+                      setForm({ ...form, student_id: "" });
+                      setStudentPickerOpen(true);
+                    }}
+                    placeholder="Digite o nome ou CPF do aluno"
+                    autoComplete="off"
+                  />
+                  {studentSearch && (
+                    <button
+                      type="button"
+                      className="rounded-full p-1 text-slate-400 hover:bg-slate-100"
+                      onClick={() => {
+                        setStudentSearch("");
+                        setForm({ ...form, student_id: "" });
+                        setStudentPickerOpen(true);
+                      }}
+                      aria-label="Limpar aluno"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                {studentPickerOpen && (
+                  <div className="absolute z-50 mt-2 max-h-64 w-full overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_20px_60px_rgba(15,23,42,.18)]">
+                    {matchingStudents.length ? matchingStudents.map((student) => (
+                      <button
+                        type="button"
+                        key={student.id}
+                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition hover:bg-blue-50 ${form.student_id === student.id ? "bg-blue-50 text-blue-700" : "text-slate-700"}`}
+                        onClick={() => {
+                          setForm({ ...form, student_id: student.id });
+                          setStudentSearch(student.full_name);
+                          setStudentPickerOpen(false);
+                        }}
+                      >
+                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-500"><UserRound className="h-4 w-4" /></span>
+                        <span className="min-w-0 flex-1 truncate text-sm font-bold">{student.full_name}</span>
+                        {form.student_id === student.id && <Check className="h-4 w-4 shrink-0" />}
+                      </button>
+                    )) : (
+                      <div className="px-4 py-6 text-center text-sm text-slate-500">Nenhum aluno encontrado.</div>
+                    )}
+                  </div>
+                )}
+                <p className="mt-1.5 text-[11px] text-slate-400">O CPF serve apenas para busca e não aparece na lista.</p>
+              </div>
+            )}
+          </div>
           <div>
             <FieldLabel required>Planos (você pode selecionar mais de um)</FieldLabel>
             <div className="mt-2 grid max-h-48 gap-2 overflow-y-auto rounded-xl border border-[#e3e8f0] bg-[#fbfcfe] p-3">
@@ -295,7 +377,7 @@ export default function MatriculasPage() {
           <label><FieldLabel required>Data de início</FieldLabel><input className="field" type="date" required value={form.start_date} onChange={(event) => setForm({ ...form, start_date: event.target.value })} /></label>
           <div className="form-actions">
             <button type="button" className="btn btn-secondary" onClick={handleCancel}>Cancelar</button>
-            <button className="btn btn-primary" type="submit" disabled={form.plan_id.length === 0}>{editId ? "Salvar matrícula" : "Criar matrícula"}</button>
+            <button className="btn btn-primary" type="submit" disabled={!form.student_id || form.plan_id.length === 0}>{editId ? "Salvar matrícula" : "Criar matrícula"}</button>
           </div>
         </form>
       </Modal>

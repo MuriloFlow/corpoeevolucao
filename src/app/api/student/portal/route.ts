@@ -187,6 +187,7 @@ export async function GET(request: Request) {
       { data: contracts },
       { data: notifications },
       { data: attendanceHistory },
+      { data: auditedOccurrences },
       { data: recentCheckins },
       { data: activeEnrollments },
     ] = await Promise.all([
@@ -204,7 +205,7 @@ export async function GET(request: Request) {
         .limit(12),
       admin
         .from("contracts")
-        .select("id, status, signed_at, created_at, plan:plans(name)")
+        .select("id, enrollment_id, status, signed_at, created_at, plan:plans(name)")
         .eq("student_id", student.id)
         .order("created_at", { ascending: false })
         .limit(12),
@@ -222,6 +223,12 @@ export async function GET(request: Request) {
         .lte("date", dateStr)
         .order("date", { ascending: true }),
       admin
+        .from("class_occurrence_audits")
+        .select("class_schedule_id, date, status")
+        .in("status", ["nullified", "inactivated"])
+        .gte("date", historyStart)
+        .lte("date", dateStr),
+      admin
         .from("checkins")
         .select("id, status, unit, checked_at")
         .eq("student_id", student.id)
@@ -237,8 +244,19 @@ export async function GET(request: Request) {
         .limit(1),
     ]);
 
-    const pendingContract = (contracts || []).find((contract: any) => contract.status === "pending") ?? null;
     const activeEnrollment = Array.isArray(activeEnrollments) ? activeEnrollments[0] ?? null : null;
+    const ignoredOccurrenceKeys = new Set((auditedOccurrences || []).map((occurrence: any) =>
+      `${occurrence.class_schedule_id}:${occurrence.date}`
+    ));
+    const validAttendances = (attendances || []).filter((attendance: any) =>
+      !ignoredOccurrenceKeys.has(`${attendance.class_schedule_id}:${attendance.date}`)
+    );
+    const validAttendanceHistory = (attendanceHistory || []).filter((attendance: any) =>
+      !ignoredOccurrenceKeys.has(`${attendance.class_schedule_id}:${attendance.date}`)
+    );
+    const pendingContract = (contracts || []).find((contract: any) =>
+      contract.status === "pending" && contract.enrollment_id === activeEnrollment?.id
+    ) ?? null;
     const portalNotifications = await mergeNotificationReadState(admin, student.id, notifications || []);
     const requiredContract = pendingContract
       ? {
@@ -251,14 +269,14 @@ export async function GET(request: Request) {
 
     return Response.json({
       student,
-      attendances,
+      attendances: validAttendances,
       weeklyClasses: (weeklyClasses || []).filter((item: any) => item.class_schedule?.active !== false),
       payments: payments || [],
       contracts: contracts || [],
       notifications: portalNotifications,
-      attendanceHistory: attendanceHistory || [],
+      attendanceHistory: validAttendanceHistory,
       recentCheckins: recentCheckins || [],
-      activitySummary: buildActivitySummary(dateStr, attendanceHistory || [], recentCheckins || [], student, weeklyClasses || [], activeEnrollment),
+      activitySummary: buildActivitySummary(dateStr, validAttendanceHistory, recentCheckins || [], student, weeklyClasses || [], activeEnrollment),
       requiredContract,
     });
   } catch (reason) {

@@ -57,6 +57,7 @@ export interface Plan {
   weekly_limit: number;
   color: string;
   active: boolean;
+  deleted_at?: string | null;
   created_at: string;
 }
 
@@ -237,6 +238,23 @@ export interface ClassAttendance {
   class_schedule?: ClassSchedule | null;
 }
 
+export type ClassOccurrenceStatus = "normal" | "nullified" | "inactivated";
+
+export interface ClassOccurrenceAudit {
+  id?: string;
+  class_schedule_id: string;
+  date: string;
+  status: ClassOccurrenceStatus;
+  reason?: string | null;
+  affected_students?: number;
+  audited_at?: string | null;
+  audited_by?: string | null;
+  class_schedule?: ClassSchedule | null;
+  attendance_total?: number;
+  confirmed_total?: number;
+  missed_total?: number;
+}
+
 export interface DashboardStats {
   totalStudents: number;
   activeStudents: number;
@@ -302,6 +320,47 @@ export interface Product {
   photo_url?: string | null;
   created_at: string;
   updated_at: string;
+  variants?: ProductVariant[];
+  has_variants?: boolean;
+  track_lots?: boolean;
+  track_expiry?: boolean;
+}
+
+export interface ProductVariant {
+  id: string;
+  product_id: string;
+  code: string;
+  barcode?: string | null;
+  sku?: string | null;
+  color?: string | null;
+  size?: string | null;
+  label: string;
+  current_stock: number;
+  minimum_stock: number;
+  maximum_stock: number;
+  current_cost: number;
+  selling_price: number;
+  physical_location?: string | null;
+  active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StockBatch {
+  id: string;
+  product_id: string;
+  variant_id?: string | null;
+  receiving_item_id?: string | null;
+  lot_number?: string | null;
+  manufacturing_date?: string | null;
+  expiry_date?: string | null;
+  received_quantity: number;
+  available_quantity: number;
+  unit_cost: number;
+  status: "active" | "depleted" | "expired" | "blocked";
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Receiving {
@@ -327,18 +386,25 @@ export interface ReceivingItem {
   id: string;
   receiving_id: string;
   product_id: string;
+  variant_id?: string | null;
   expected_quantity: number;
   checked_quantity: number;
   unit_cost: number;
   total_cost: number;
   status: "Pendente" | "Conferido" | "Divergente";
+  lot_number?: string | null;
+  manufacturing_date?: string | null;
+  expiry_date?: string | null;
   created_at: string;
   product?: Product | null;
+  variant?: ProductVariant | null;
 }
 
 export interface InventoryTransaction {
   id: string;
   product_id: string;
+  variant_id?: string | null;
+  batch_id?: string | null;
   transaction_type: "IN" | "OUT" | "ADJ";
   quantity: number;
   previous_stock: number;
@@ -348,6 +414,7 @@ export interface InventoryTransaction {
   operator_id?: string | null;
   created_at: string;
   product?: Product | null;
+  variant?: ProductVariant | null;
 }
 
 export interface Sale {
@@ -366,11 +433,14 @@ export interface SaleItem {
   id: string;
   sale_id: string;
   product_id: string;
+  variant_id?: string | null;
+  batch_id?: string | null;
   quantity: number;
   unit_price: number;
   total_price: number;
   created_at: string;
   product?: Product | null;
+  variant?: ProductVariant | null;
 }
 
 export interface LocalTables {
@@ -393,6 +463,8 @@ export interface LocalTables {
   student_classes: StudentClass;
   suppliers: Supplier;
   products: Omit<Product, "supplier">;
+  product_variants: ProductVariant;
+  stock_batches: StockBatch;
   receivings: Omit<Receiving, "supplier">;
   receiving_items: Omit<ReceivingItem, "product">;
   inventory_transactions: Omit<InventoryTransaction, "product">;

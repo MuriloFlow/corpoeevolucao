@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { ArrowLeft, CheckCircle, Package, Truck, FileText, AlertTriangle, Play, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getReceivingById, getReceivingItems, updateReceiving, createInventoryTransaction, updateProduct, deleteReceiving } from "@/lib/api";
+import { getReceivingById, getReceivingItems, updateReceiving, createInventoryTransaction, updateProduct, updateProductVariant, createStockBatch, deleteReceiving } from "@/lib/api";
 import type { Receiving, ReceivingItem } from "@/lib/types";
 import { ErrorBanner, StatusBadge } from "@/components/ui";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -55,17 +55,46 @@ export default function ReceivingDetailsPage({ params }: { params: Promise<{ id:
     try {
       // For each item, update stock and create transaction
       for (const item of items) {
-        if (!item.product) continue;
-        
-        const newStock = item.product.current_stock + item.checked_quantity;
-        
-        await updateProduct(item.product.id, { current_stock: newStock });
+        if (!item.product || item.checked_quantity <= 0) continue;
+
+        const previousStock = item.variant?.current_stock ?? item.product.current_stock;
+        const newStock = previousStock + item.checked_quantity;
+        if (item.variant) {
+          await updateProductVariant(item.variant.id, {
+            current_stock: newStock,
+            current_cost: item.unit_cost,
+          });
+        } else {
+          await updateProduct(item.product.id, {
+            current_stock: newStock,
+            current_cost: item.unit_cost,
+          });
+        }
+
+        let batchId: string | null = null;
+        if (item.checked_quantity > 0 && (item.product.track_lots || item.product.track_expiry || item.lot_number || item.expiry_date)) {
+          const batch = await createStockBatch({
+            product_id: item.product.id,
+            variant_id: item.variant_id || null,
+            receiving_item_id: item.id,
+            lot_number: item.lot_number || null,
+            manufacturing_date: item.manufacturing_date || null,
+            expiry_date: item.expiry_date || null,
+            received_quantity: item.checked_quantity,
+            available_quantity: item.checked_quantity,
+            unit_cost: item.unit_cost,
+            status: "active",
+          });
+          batchId = batch.id;
+        }
         
         await createInventoryTransaction({
           product_id: item.product.id,
+          variant_id: item.variant_id || null,
+          batch_id: batchId,
           transaction_type: "IN",
           quantity: item.checked_quantity,
-          previous_stock: item.product.current_stock,
+          previous_stock: previousStock,
           new_stock: newStock,
           reason: `Entrada via NFe ${receiving.invoice_number || 'S/N'}`,
           reference_id: receiving.id
@@ -85,7 +114,10 @@ export default function ReceivingDetailsPage({ params }: { params: Promise<{ id:
 
   const totalExpected = items.reduce((sum, i) => sum + i.expected_quantity, 0);
   const totalChecked = items.reduce((sum, i) => sum + i.checked_quantity, 0);
-  const hasDivergences = items.some(i => i.status === "Divergente" || i.checked_quantity !== i.expected_quantity);
+  const triageHasEvidence = totalChecked > 0
+    || ["Triagem Concluída", "Divergência", "Finalizado"].includes(receiving.status);
+  const hasDivergences = triageHasEvidence
+    && items.some(i => i.status === "Divergente" || i.checked_quantity !== i.expected_quantity);
   const canFinalize = (receiving.status === "Triagem Concluída" || receiving.status === "Divergência") && items.length > 0;
 
   return (
@@ -236,8 +268,9 @@ export default function ReceivingDetailsPage({ params }: { params: Promise<{ id:
                             </div>
                           )}
                           <div className="truncate max-w-[300px]">
-                            <strong className="block text-xs text-slate-900">{item.product?.name}</strong>
-                            <small className="text-[10px] text-slate-500 font-mono">{item.product?.barcode || item.product?.sku}</small>
+                            <strong className="block text-xs text-slate-900">{item.product?.name}{item.variant ? ` · ${item.variant.label}` : ""}</strong>
+                            <small className="text-[10px] text-slate-500 font-mono">{item.variant?.code || item.product?.barcode || item.product?.sku}</small>
+                            {(item.lot_number || item.expiry_date) && <small className="mt-1 block text-[10px] text-slate-400">{item.lot_number ? `Lote ${item.lot_number}` : "Sem lote"}{item.expiry_date ? ` · Val. ${formatDate(item.expiry_date)}` : ""}</small>}
                           </div>
                         </div>
                       </td>
