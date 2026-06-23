@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useRef, type FormEvent } from "react";
 import { ErrorBanner, FieldLabel, PageHeader } from "@/components/ui";
-import { getStudentById, updateStudent, getClassSchedules, getStudentClasses, linkStudentToClasses, getContracts } from "@/lib/api";
+import { getStudentById, updateStudent, getClassSchedules, getStudentClasses, linkStudentToClasses, getContracts, removeStudentPhoto, saveStudentPhoto } from "@/lib/api";
 import { useDeviceSelector } from "@/components/device-selector";
 import type { ClassSchedule, Contract } from "@/lib/types";
 import { calculateIMC, digitsOnly, formatDateTime, maskCEP, maskCPF, maskPhone } from "@/lib/utils";
@@ -232,39 +232,23 @@ export default function EditarAlunoPage({ params }: { params: Promise<{ id: stri
       });
 
       if (form.photo_base64 && form.photo_base64.startsWith("data:image")) {
-        try {
-          const res = await fetch(form.photo_base64);
-          const blob = await res.blob();
-          await supabase.storage.from("student-photos").upload(`${student.id}.jpg`, blob, {
-            contentType: "image/jpeg",
-            upsert: true
-          });
-          const photo_url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/student-photos/${student.id}.jpg?t=${Date.now()}`;
-          await supabase.from("students").update({ photo_url }).eq("id", student.id);
-          
-          supabase.channel("students-sync", { config: { broadcast: { self: false } } }).send({
-            type: "broadcast",
-            event: "STUDENT_FACE_UPDATED",
-            payload: { id: student.id, full_name: form.full_name, photo_url }
-          });
-        } catch (e) {
-          console.error("Failed to upload photo", e);
-        }
+        const res = await fetch(form.photo_base64);
+        const blob = await res.blob();
+        const { photoUrl } = await saveStudentPhoto(student.id, blob);
+
+        supabase.channel("students-sync", { config: { broadcast: { self: false } } }).send({
+          type: "broadcast",
+          event: "STUDENT_FACE_UPDATED",
+          payload: { id: student.id, full_name: form.full_name, photo_url: photoUrl }
+        });
       } else if (!form.photo_base64) {
-        try {
-          const { error: storageError } = await supabase.storage.from("student-photos").remove([`${student.id}.jpg`]);
-          if (storageError) console.error("Failed to remove photo from bucket", storageError);
-          
-          await supabase.from("students").update({ photo_url: null }).eq("id", student.id);
-          
-          supabase.channel("students-sync", { config: { broadcast: { self: false } } }).send({
-            type: "broadcast",
-            event: "STUDENT_FACE_REMOVED",
-            payload: { id: student.id }
-          });
-        } catch (e) {
-          console.error("Error removing photo", e);
-        }
+        await removeStudentPhoto(student.id);
+
+        supabase.channel("students-sync", { config: { broadcast: { self: false } } }).send({
+          type: "broadcast",
+          event: "STUDENT_FACE_REMOVED",
+          payload: { id: student.id }
+        });
       }
 
       await linkStudentToClasses(student.id, selectedSchedules);

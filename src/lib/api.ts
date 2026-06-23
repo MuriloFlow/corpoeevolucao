@@ -110,6 +110,94 @@ export async function updateStudent(id: string, values: Partial<Student>) {
   return update("students", id, { ...values, updated_at: new Date().toISOString() });
 }
 
+async function blobToDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error ?? new Error("Não foi possível processar a foto."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+export async function saveStudentPhoto(id: string, photo: Blob) {
+  if (shouldUseLocalData()) {
+    const photoUrl = await blobToDataUrl(photo);
+    await updateStudent(id, { photo_url: photoUrl });
+    return { ok: true, photoUrl, removedSuperseded: [] as string[] };
+  }
+
+  const { data } = await supabase.auth.getSession();
+  const formData = new FormData();
+  formData.append("photo", photo, `${id}.jpg`);
+  const response = await fetch(`/api/admin/students/${id}/photo`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${data.session?.access_token ?? ""}` },
+    body: formData,
+  });
+  const payload = await response.json() as {
+    ok?: boolean;
+    photoUrl?: string;
+    removedSuperseded?: string[];
+    error?: string;
+  };
+  if (!response.ok || !payload.photoUrl) {
+    throw new Error(payload.error ?? "Não foi possível salvar a foto facial.");
+  }
+  notifyDbChange();
+  return {
+    ok: true,
+    photoUrl: payload.photoUrl,
+    removedSuperseded: payload.removedSuperseded ?? [],
+  };
+}
+
+export async function removeStudentPhoto(id: string) {
+  if (shouldUseLocalData()) {
+    await updateStudent(id, { photo_url: null });
+    return { ok: true, removedPaths: [] as string[] };
+  }
+
+  const { data } = await supabase.auth.getSession();
+  const response = await fetch(`/api/admin/students/${id}/photo`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${data.session?.access_token ?? ""}` },
+  });
+  const payload = await response.json() as { ok?: boolean; removedPaths?: string[]; error?: string };
+  if (!response.ok) throw new Error(payload.error ?? "Não foi possível remover a foto facial.");
+  notifyDbChange();
+  return { ok: true, removedPaths: payload.removedPaths ?? [] };
+}
+
+export async function cleanupOrphanedStudentPhotos() {
+  if (shouldUseLocalData()) {
+    return { ok: true, scanned: 0, referenced: 0, removed: 0, removedPaths: [], protectedRecent: 0 };
+  }
+
+  const { data } = await supabase.auth.getSession();
+  const response = await fetch("/api/admin/student-photos/cleanup", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${data.session?.access_token ?? ""}` },
+  });
+  const payload = await response.json() as {
+    ok?: boolean;
+    scanned?: number;
+    referenced?: number;
+    removed?: number;
+    removedPaths?: string[];
+    protectedRecent?: number;
+    error?: string;
+  };
+  if (!response.ok) throw new Error(payload.error ?? "Não foi possível limpar fotos faciais sem uso.");
+  return {
+    ok: true,
+    scanned: payload.scanned ?? 0,
+    referenced: payload.referenced ?? 0,
+    removed: payload.removed ?? 0,
+    removedPaths: payload.removedPaths ?? [],
+    protectedRecent: payload.protectedRecent ?? 0,
+  };
+}
+
 async function retirePreviousActiveEnrollments(studentId: string) {
   if (!studentId) return;
 

@@ -1,4 +1,5 @@
 import { apiErrorResponse, ApiError, requireRole, getClientIp, logAudit } from "@/lib/server/supabase-admin";
+import { removeStudentPhotoObjects } from "@/lib/server/student-photo-storage";
 
 /**
  * DELETE /api/admin/students/[id]
@@ -14,7 +15,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     const ip = getClientIp(request);
 
     // 1. Verify student exists
-    const { data: student, error } = await admin.from("students").select("id, full_name, email, profile_id").eq("id", id).single();
+    const { data: student, error } = await admin.from("students").select("id, full_name, email, profile_id, photo_url").eq("id", id).single();
     if (error || !student) throw new ApiError("Aluno não encontrado.", 404);
 
     // 2. Fetch related enrollments for cascade
@@ -70,7 +71,16 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
       }
     }
 
-    // 7. Audit log
+    // 7. Remove every facial photo owned by this student.
+    let removedPhotoPaths: string[] = [];
+    let photoCleanupError: string | null = null;
+    try {
+      removedPhotoPaths = await removeStudentPhotoObjects(admin, id, student.photo_url);
+    } catch (reason) {
+      photoCleanupError = reason instanceof Error ? reason.message : "Falha desconhecida ao remover foto facial.";
+    }
+
+    // 8. Audit log
     await logAudit(admin, {
       userId: operator.id,
       action: "DELETE",
@@ -82,11 +92,18 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
         enrollments_deleted: enrollmentIds.length,
         contracts_deleted: contractIds.length,
         profile_deleted: !!student.profile_id,
+        facial_photo_paths_removed: removedPhotoPaths,
+        facial_photo_cleanup_error: photoCleanupError,
       },
       ip,
     });
 
-    return Response.json({ ok: true, deleted: student.full_name });
+    return Response.json({
+      ok: true,
+      deleted: student.full_name,
+      removedPhotoPaths,
+      photoCleanupPending: Boolean(photoCleanupError),
+    });
   } catch (reason) {
     return apiErrorResponse(reason);
   }

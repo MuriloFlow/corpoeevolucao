@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useRef, type FormEvent } from "react";
 import { ErrorBanner, FieldLabel, PageHeader } from "@/components/ui";
-import { createStudent, getClassSchedules, linkStudentToClasses } from "@/lib/api";
+import { createStudent, getClassSchedules, linkStudentToClasses, saveStudentPhoto } from "@/lib/api";
 import type { ClassSchedule } from "@/lib/types";
 import { calculateIMC, digitsOnly, formatDateTime, maskCEP, maskCPF, maskPhone } from "@/lib/utils";
 import { useDeviceSelector } from "@/components/device-selector";
@@ -189,25 +189,16 @@ export default function NovoAlunoPage() {
       });
 
       if (form.photo_base64) {
-        try {
-          const res = await fetch(form.photo_base64);
-          const blob = await res.blob();
-          await supabase.storage.from("student-photos").upload(`${student.id}.jpg`, blob, {
-            contentType: "image/jpeg",
-            upsert: true
-          });
-          const photo_url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/student-photos/${student.id}.jpg?t=${Date.now()}`;
-          await supabase.from("students").update({ photo_url }).eq("id", student.id);
-          
-          // REALTIME: Avisa a catraca que tem rosto novo pra sincronizar
-          supabase.channel("students-sync", { config: { broadcast: { self: false } } }).send({
-            type: "broadcast",
-            event: "STUDENT_FACE_UPDATED",
-            payload: { id: student.id, full_name: form.full_name, photo_url }
-          });
-        } catch (e) {
-          console.error("Failed to upload photo", e);
-        }
+        const res = await fetch(form.photo_base64);
+        const blob = await res.blob();
+        const { photoUrl } = await saveStudentPhoto(student.id, blob);
+
+        // REALTIME: Avisa a catraca que tem rosto novo pra sincronizar
+        supabase.channel("students-sync", { config: { broadcast: { self: false } } }).send({
+          type: "broadcast",
+          event: "STUDENT_FACE_UPDATED",
+          payload: { id: student.id, full_name: form.full_name, photo_url: photoUrl }
+        });
       }
 
       await linkStudentToClasses(student.id, selectedSchedules);

@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { StudentQrCard } from "@/components/student-qr-card";
 import { EmptyState, ErrorBanner, LoadingState, Modal, PageHeader, SearchInput, StatusBadge } from "@/components/ui";
-import { getStudents, releaseStudentPortal, updateStudent, deleteStudent, onboardStudent } from "@/lib/api";
+import { cleanupOrphanedStudentPhotos, getStudents, releaseStudentPortal, updateStudent, deleteStudent, onboardStudent } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 import { useRealtimeSync } from "@/hooks/use-realtime-sync";
 import type { Student, StudentStatus } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
@@ -14,6 +15,7 @@ const statusLabel: Record<StudentStatus, string> = { active: "Ativo", inactive: 
 const statusTone: Record<StudentStatus, "green" | "gray" | "red"> = { active: "green", inactive: "gray", blocked: "red" };
 
 export default function AlunosPage() {
+  const { user } = useAuth();
   const [students, setStudents] = useState<Student[]>([]);
   const [selected, setSelected] = useState<Student | null>(null);
   const [search, setSearch] = useState("");
@@ -29,6 +31,24 @@ export default function AlunosPage() {
   }
   useEffect(() => { void load(); }, []);
   useRealtimeSync(load);
+
+  useEffect(() => {
+    if (user?.app_role !== "admin") return;
+    const cleanupKey = "student-photo-cleanup-2026-06";
+    if (sessionStorage.getItem(cleanupKey)) return;
+    sessionStorage.setItem(cleanupKey, "running");
+
+    void cleanupOrphanedStudentPhotos()
+      .then((result) => {
+        sessionStorage.setItem(cleanupKey, "done");
+        if (result.removed > 0) {
+          setMessage(`${result.removed} foto${result.removed === 1 ? "" : "s"} ${result.removed === 1 ? "facial" : "faciais"} sem uso ${result.removed === 1 ? "foi removida" : "foram removidas"} do armazenamento.`);
+        }
+      })
+      .catch(() => {
+        sessionStorage.removeItem(cleanupKey);
+      });
+  }, [user?.app_role]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
