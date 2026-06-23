@@ -700,15 +700,15 @@ export default function StudentPortalPage() {
   const notifications = data?.notifications ?? [];
   const unreadNotifications = notifications.filter((notification) => !notification.read);
 
-  if (isLoading) return <LoadingState label="Abrindo portal do aluno..." />;
-  if (!user) return <main className="grid min-h-screen place-items-center bg-black p-5 text-white"><section className="max-w-sm rounded-[32px] border border-white/10 bg-white/10 p-7 text-center"><QrCode className="mx-auto h-10 w-10 text-white" /><h1 className="mt-4 text-xl font-black">Portal do aluno</h1><p className="mt-2 text-sm text-white/60">Use o link enviado ao seu e-mail ou entre com sua conta.</p><Link className="mt-5 inline-flex rounded-full bg-white px-5 py-3 text-sm font-black text-black" href="/">Entrar</Link></section></main>;
-  if (user.app_role !== "student") return <main className="grid min-h-screen place-items-center bg-black p-5"><Link className="rounded-full bg-white px-5 py-3 text-sm font-black text-black" href="/dashboard">Voltar ao painel</Link></main>;
-  if (!data && !error) return <LoadingState label="Carregando seus dados..." />;
+  if (isLoading) return <main className="portal-safe-center grid place-items-center bg-black text-white"><LoadingState label="Abrindo portal do aluno..." /></main>;
+  if (!user) return <main className="portal-safe-center grid place-items-center bg-black text-white"><section className="max-w-sm rounded-[32px] border border-white/10 bg-white/10 p-7 text-center"><QrCode className="mx-auto h-10 w-10 text-white" /><h1 className="mt-4 text-xl font-black">Portal do aluno</h1><p className="mt-2 text-sm text-white/60">Use o link enviado ao seu e-mail ou entre com sua conta.</p><Link className="mt-5 inline-flex rounded-full bg-white px-5 py-3 text-sm font-black text-black" href="/">Entrar</Link></section></main>;
+  if (user.app_role !== "student") return <main className="portal-safe-center grid place-items-center bg-black"><Link className="rounded-full bg-white px-5 py-3 text-sm font-black text-black" href="/dashboard">Voltar ao painel</Link></main>;
+  if (!data && !error) return <main className="portal-safe-center grid place-items-center bg-black text-white"><LoadingState label="Carregando seus dados..." /></main>;
 
   if (data?.requiredContract) {
     return (
-      <main className="min-h-screen bg-black p-5 text-white">
-        <section className="mx-auto max-w-md overflow-hidden rounded-[34px] border border-white/10 bg-[linear-gradient(160deg,#151515,#050505)] p-7 shadow-[0_24px_80px_rgba(0,0,0,.55)]">
+      <main className="portal-safe-center grid place-items-center bg-black text-white">
+        <section className="w-full max-w-md overflow-hidden rounded-[34px] border border-white/10 bg-[linear-gradient(160deg,#151515,#050505)] p-7 shadow-[0_24px_80px_rgba(0,0,0,.55)]">
           <div className="grid h-14 w-14 place-items-center rounded-2xl bg-white text-black"><FileSignature className="h-7 w-7" /></div>
           <p className="mt-7 text-xs font-black uppercase tracking-[.18em] text-[#a7ff3c]">Primeiro acesso</p>
           <h1 className="mt-2 text-3xl font-black tracking-[-.04em]">Assine seu contrato para liberar o app</h1>
@@ -729,7 +729,7 @@ export default function StudentPortalPage() {
   return (
     <main className="min-h-screen scroll-smooth bg-black text-white">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_right,rgba(167,255,60,.16),transparent_32%),radial-gradient(circle_at_top_left,rgba(255,255,255,.08),transparent_28%)]" />
-      <div className="relative mx-auto min-h-screen max-w-md px-5 pb-32 pt-4">
+      <div className="portal-safe-content relative mx-auto max-w-md">
         <header className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <h1 className="truncate text-[25px] font-black leading-tight tracking-[-.05em]">Ola, {firstName(displayName)}</h1>
@@ -1218,7 +1218,7 @@ function BottomNav({ activeTab, onChange }: { activeTab: PortalTab; onChange: (t
   const itemClass = (tab: PortalTab) => `flex h-[50px] min-w-0 flex-col items-center justify-center gap-1 overflow-hidden rounded-2xl px-1 text-[9px] font-black leading-none transition duration-200 active:scale-95 ${activeTab === tab ? "text-white" : "text-white/35"}`;
   const labelClass = "block max-w-full truncate whitespace-nowrap leading-none";
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 mx-auto max-w-md px-4 pb-[max(12px,env(safe-area-inset-bottom))]">
+    <nav className="portal-safe-bottom-nav fixed inset-x-0 bottom-0 z-40 mx-auto max-w-md">
       <div className="relative grid h-[76px] grid-cols-[1fr_1fr_66px_1fr_1fr] items-end rounded-[28px] border border-white/12 bg-black/82 px-2.5 pb-2 pt-2 shadow-[0_18px_70px_rgba(0,0,0,.72)] backdrop-blur-2xl">
         <button className={itemClass("home")} onClick={() => onChange("home")}><Home className="h-5 w-5 shrink-0" /><span className={labelClass}>Inicio</span></button>
         <button className={itemClass("payments")} onClick={() => onChange("payments")}><CreditCard className="h-5 w-5 shrink-0" /><span className={labelClass}>Faturas</span></button>

@@ -326,7 +326,7 @@ export default function EditarAlunoPage({ params }: { params: Promise<{ id: stri
                           {contract.status === "signed" ? "Assinado" : contract.status === "pending" ? "Pendente" : "Cancelado"}
                         </span>
                       </div>
-                      {signatureImage && <img src={signatureImage} alt="Assinatura manuscrita salva" className="mt-3 h-28 w-full rounded-xl border border-slate-200 bg-white object-contain p-2" />}
+                      {signatureImage && <img src={signatureImage} alt="Assinatura manuscrita salva" className="mt-3 h-40 w-full rounded-xl border border-slate-200 bg-white object-contain p-3 sm:h-48" />}
                     </article>
                   );
                 })}

@@ -4,8 +4,8 @@ import React, { useEffect, useState, useRef } from "react";
 import { ArrowLeft, CheckCircle, Package, ScanLine, AlertTriangle, Search, Check, Save } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getReceivingById, getReceivingItems, getProducts, updateReceiving, createReceivingItem, updateReceivingItem, deleteReceivingItem } from "@/lib/api";
-import type { Receiving, ReceivingItem, Product } from "@/lib/types";
+import { getReceivingById, getReceivingItems, getProducts, updateReceiving, createReceivingItem, updateReceivingItem } from "@/lib/api";
+import type { Receiving, ReceivingItem, Product, ProductVariant } from "@/lib/types";
 import { ErrorBanner, Modal, StatusBadge } from "@/components/ui";
 import { formatCurrency } from "@/lib/utils";
 
@@ -20,10 +20,11 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [scanValue, setScanValue] = useState("");
-  const [lastScanned, setLastScanned] = useState<{ product: Product, quantity: number } | null>(null);
+  const [lastScanned, setLastScanned] = useState<{ product: Product; item: ReceivingItem; quantity: number; code: string } | null>(null);
   const [variantChoice, setVariantChoice] = useState<ReceivingItem[]>([]);
 
   const scanInputRef = useRef<HTMLInputElement>(null);
+  const scanLockedRef = useRef(false);
 
   useEffect(() => {
     Promise.all([
@@ -61,45 +62,120 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
 
   const totalExpectedByItems = items.reduce((sum, i) => sum + i.expected_quantity, 0);
   const isBlindReceipt = totalExpectedByItems === 0 && (receiving?.total_items || 0) > 0;
+
+  const normalizeCode = (value?: string | null) => (value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+  const productById = new Map(products.map((product) => [product.id, product]));
+  const variantById = new Map<string, ProductVariant>();
+  for (const product of products) {
+    for (const variant of product.variants || []) variantById.set(variant.id, variant);
+  }
+
+  const resolveItemVariant = (item: ReceivingItem) =>
+    item.variant || (item.variant_id ? variantById.get(item.variant_id) ?? null : null);
+
+  const variantCodes = (variant?: ProductVariant | null) => [
+    variant?.code,
+    variant?.barcode,
+    variant?.sku,
+  ].map(normalizeCode).filter(Boolean);
+
+  const productCodes = (product?: Product | null) => [
+    product?.barcode,
+    product?.primary_barcode,
+    product?.sku,
+    product?.internal_code,
+  ].map(normalizeCode).filter(Boolean);
   
-  const registerItemScan = async (existingItem: ReceivingItem, product: Product) => {
+  const registerItemScan = async (existingItem: ReceivingItem, product: Product, scannedCode?: string) => {
     try {
       const newCheckedQty = existingItem.checked_quantity + 1;
-      const newStatus = isBlindReceipt ? "Conferido" : (newCheckedQty > existingItem.expected_quantity ? "Divergente" : (newCheckedQty === existingItem.expected_quantity ? "Conferido" : "Pendente"));
+      const newStatus: ReceivingItem["status"] = isBlindReceipt
+        ? "Conferido"
+        : newCheckedQty > existingItem.expected_quantity
+          ? "Divergente"
+          : newCheckedQty === existingItem.expected_quantity
+            ? "Conferido"
+            : "Pendente";
       await updateReceivingItem(existingItem.id, { checked_quantity: newCheckedQty, status: newStatus });
-      setItems((current) => current.map((item) => item.id === existingItem.id ? { ...item, checked_quantity: newCheckedQty, status: newStatus } : item));
-      setLastScanned({ product, quantity: newCheckedQty });
+      const updatedItem = { ...existingItem, checked_quantity: newCheckedQty, status: newStatus };
+      setItems((current) => current.map((item) => item.id === existingItem.id ? updatedItem : item));
+      const variant = resolveItemVariant(existingItem);
+      setLastScanned({
+        product,
+        item: updatedItem,
+        quantity: newCheckedQty,
+        code: scannedCode || variant?.code || product.barcode || product.internal_code || product.sku || "",
+      });
       setVariantChoice([]);
       if (!isBlindReceipt && newCheckedQty > existingItem.expected_quantity) {
-        setError(`A quantidade de ${product.name}${existingItem.variant ? ` · ${existingItem.variant.label}` : ""} ultrapassou a NFe.`);
+        setError(`A quantidade de ${product.name}${variant ? ` · ${variant.label}` : ""} ultrapassou a NFe.`);
       }
     } catch {
       setError("Erro ao registrar a bipagem no banco de dados.");
+    } finally {
+      scanLockedRef.current = false;
+      window.setTimeout(() => scanInputRef.current?.focus(), 0);
     }
   };
 
   const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!scanValue.trim() || !receiving) return;
-    const barcode = scanValue.trim();
+    if (!scanValue.trim() || !receiving || scanLockedRef.current) return;
+    scanLockedRef.current = true;
+    const barcode = normalizeCode(scanValue);
     setScanValue("");
     setError(null);
-    const product = products.find((item) =>
-      item.barcode === barcode || item.primary_barcode === barcode || item.sku === barcode || item.internal_code === barcode
+
+    // A etiqueta da variante identifica diretamente a linha correta da NFe.
+    const directVariantItem = items.find((item) =>
+      variantCodes(resolveItemVariant(item)).includes(barcode)
     );
-    if (!product) {
-      setError(`Código principal não reconhecido: ${barcode}. A triagem não aceita código interno de variante.`);
+    if (directVariantItem) {
+      const product = directVariantItem.product || productById.get(directVariantItem.product_id);
+      if (!product) {
+        scanLockedRef.current = false;
+        setError("A variante foi localizada, mas o produto principal não está disponível no cadastro.");
+        return;
+      }
+      await registerItemScan(directVariantItem, product, barcode);
       return;
     }
+
+    // Distingue variante válida de outra nota de um código completamente desconhecido.
+    const knownVariant = products
+      .flatMap((product) => (product.variants || []).map((variant) => ({ product, variant })))
+      .find(({ variant }) => variantCodes(variant).includes(barcode));
+    if (knownVariant) {
+      scanLockedRef.current = false;
+      setError(`A variante ${knownVariant.product.name} · ${knownVariant.variant.label} existe no cadastro, mas não consta nesta nota fiscal.`);
+      window.setTimeout(() => scanInputRef.current?.focus(), 0);
+      return;
+    }
+
+    const product = products.find((item) => productCodes(item).includes(barcode));
+    if (!product) {
+      scanLockedRef.current = false;
+      setError(`Código não reconhecido: ${barcode}. Confira se a etiqueta pertence a este produto ou se a variante está cadastrada.`);
+      window.setTimeout(() => scanInputRef.current?.focus(), 0);
+      return;
+    }
+
     const candidates = items.filter((item) => item.product_id === product.id);
     if (candidates.length > 1) {
+      scanLockedRef.current = false;
       setVariantChoice(candidates);
       return;
     }
     if (candidates.length === 1) {
-      await registerItemScan(candidates[0], product);
+      await registerItemScan(candidates[0], product, barcode);
       return;
     }
+
+    scanLockedRef.current = false;
     const newItem = await createReceivingItem({
       receiving_id: receiving.id,
       product_id: product.id,
@@ -113,8 +189,10 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
       manufacturing_date: null,
       expiry_date: null,
     });
-    setItems((current) => [...current, { ...newItem, product }]);
-    setLastScanned({ product, quantity: 1 });
+    const insertedItem = { ...newItem, product };
+    setItems((current) => [...current, insertedItem]);
+    setLastScanned({ product, item: insertedItem, quantity: 1, code: barcode });
+    window.setTimeout(() => scanInputRef.current?.focus(), 0);
   };
 
   const handleUpdateQty = async (itemId: string, newQty: number) => {
@@ -127,15 +205,6 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
       setItems(items.map(i => i.id === itemId ? { ...i, checked_quantity: newQty, status: newStatus } : i));
     } catch {
       setError("Erro ao atualizar quantidade.");
-    }
-  };
-
-  const handleRemoveItem = async (itemId: string) => {
-    try {
-      await deleteReceivingItem(itemId);
-      setItems(items.filter(i => i.id !== itemId));
-    } catch {
-      setError("Erro ao remover item.");
     }
   };
 
@@ -211,7 +280,7 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
             </div>
             
             <h2 className="text-lg font-bold flex items-center gap-2 mb-4"><ScanLine className="w-5 h-5 text-blue-400" /> Bipar Produto</h2>
-            <p className="text-slate-400 text-sm mb-6">O sistema está aguardando a leitura do leitor de código de barras.</p>
+            <p className="text-slate-400 text-sm mb-6">Leia a etiqueta da variante para conferir diretamente ou o código principal para escolher a variante.</p>
             
             <div className="relative z-10">
               <input
@@ -220,7 +289,7 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
                 value={scanValue}
                 onChange={(e) => setScanValue(e.target.value)}
                 className="w-full bg-slate-800 border-2 border-slate-700 text-white rounded-xl px-4 py-4 font-mono text-xl focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 transition"
-                placeholder="Escaneie o EAN/SKU..."
+                placeholder="Escaneie o código principal ou da variante..."
                 autoFocus
               />
             </div>
@@ -253,8 +322,8 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
                   </div>
                 )}
                 <div className="flex-1">
-                  <h3 className="font-bold text-slate-900 leading-tight">{lastScanned.product.name}</h3>
-                  <div className="text-xs text-slate-500 mt-1 font-mono">{lastScanned.product.barcode || lastScanned.product.sku}</div>
+                  <h3 className="font-bold text-slate-900 leading-tight">{lastScanned.product.name}{resolveItemVariant(lastScanned.item) ? ` · ${resolveItemVariant(lastScanned.item)?.label}` : ""}</h3>
+                  <div className="text-xs text-slate-500 mt-1 font-mono">{lastScanned.code}</div>
                   <div className="text-2xl font-black text-blue-600 mt-2">{lastScanned.quantity} <span className="text-sm font-medium text-slate-500">{lastScanned.product.unit_measure} lidos</span></div>
                 </div>
               </div>
@@ -266,7 +335,10 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
         <div className="lg:col-span-2">
           <div className="card h-full flex flex-col">
             <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <h2 className="font-bold text-slate-800">Produtos da Nota</h2>
+              <div>
+                <h2 className="font-bold text-slate-800">Produtos da Nota</h2>
+                <p className="mt-0.5 text-[11px] text-slate-400">Itens fiscais são preservados. A triagem altera somente a quantidade conferida.</p>
+              </div>
               <div className="text-sm font-semibold text-slate-500">
                 <span className="text-slate-900">{totalChecked}</span> / {totalExpected} un.
               </div>
@@ -286,7 +358,7 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
                       <th className="px-4 py-3 font-semibold text-center">Esperado</th>
                       <th className="px-4 py-3 font-semibold text-center">Conferido</th>
                       <th className="px-4 py-3 font-semibold text-center">Status</th>
-                      <th className="px-4 py-3 font-semibold text-right">Ações</th>
+                      <th className="px-4 py-3 font-semibold text-right">Conferência</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -296,7 +368,7 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
                       const isZero = item.checked_quantity === 0;
                       
                       return (
-                        <tr key={item.id} className={`transition-colors ${lastScanned?.product.id === item.product_id ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}>
+                        <tr key={item.id} className={`transition-colors ${lastScanned?.item.id === item.id ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-3 min-w-[200px]">
                               {item.product?.photo_url ? (
@@ -307,8 +379,8 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
                                 </div>
                               )}
                               <div className="truncate max-w-[250px]">
-                                <strong className={`block text-xs ${isComplete ? 'text-slate-500' : 'text-slate-900'}`}>{item.product?.name}{item.variant ? ` · ${item.variant.label}` : ""}</strong>
-                                <small className="text-[10px] text-slate-400 font-mono">{item.variant?.code || item.product?.barcode || item.product?.sku}</small>
+                                <strong className={`block text-xs ${isComplete ? 'text-slate-500' : 'text-slate-900'}`}>{item.product?.name}{resolveItemVariant(item) ? ` · ${resolveItemVariant(item)?.label}` : ""}</strong>
+                                <small className="text-[10px] text-slate-400 font-mono">{resolveItemVariant(item)?.code || item.product?.barcode || item.product?.sku}</small>
                                 {(item.lot_number || item.expiry_date) && <small className="mt-0.5 block text-[10px] text-slate-400">{item.lot_number ? `Lote ${item.lot_number}` : "Sem lote"}{item.expiry_date ? ` · Val. ${item.expiry_date}` : ""}</small>}
                               </div>
                             </div>
@@ -334,9 +406,23 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
                           </td>
                           <td className="px-4 py-3 text-right">
                             <div className="flex items-center justify-end gap-2">
-                              <button onClick={() => handleUpdateQty(item.id, item.checked_quantity - 1)} className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition">-</button>
-                              <button onClick={() => handleUpdateQty(item.id, item.checked_quantity + 1)} className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition">+</button>
-                              <button onClick={() => handleRemoveItem(item.id)} className="w-8 h-8 flex items-center justify-center rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition">x</button>
+                              <button
+                                type="button"
+                                disabled={item.checked_quantity <= 0}
+                                onClick={() => handleUpdateQty(item.id, item.checked_quantity - 1)}
+                                className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                                title="Desfazer uma unidade conferida"
+                              >
+                                -
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateQty(item.id, item.checked_quantity + 1)}
+                                className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600 transition hover:bg-slate-200"
+                                title="Adicionar uma unidade conferida"
+                              >
+                                +
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -358,9 +444,15 @@ export default function TriagemInterfacePage({ params }: { params: Promise<{ id:
               type="button"
               key={item.id}
               className="flex items-center justify-between rounded-xl border border-slate-200 p-4 text-left transition hover:border-blue-400 hover:bg-blue-50"
-              onClick={() => item.product && void registerItemScan(item, item.product)}
+              onClick={() => {
+                const product = item.product || productById.get(item.product_id);
+                if (product) {
+                  scanLockedRef.current = true;
+                  void registerItemScan(item, product, productCodes(product)[0]);
+                }
+              }}
             >
-              <span><strong className="block text-sm text-slate-900">{item.variant?.label || "Produto único"}</strong><small className="mt-1 block font-mono text-xs text-slate-400">{item.variant?.code || item.product?.barcode}</small></span>
+              <span><strong className="block text-sm text-slate-900">{resolveItemVariant(item)?.label || "Produto único"}</strong><small className="mt-1 block font-mono text-xs text-slate-400">{resolveItemVariant(item)?.code || item.product?.barcode}</small></span>
               <span className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{item.checked_quantity}/{item.expected_quantity}</span>
             </button>
           ))}

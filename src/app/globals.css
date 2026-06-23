@@ -1,6 +1,10 @@
 @import "tailwindcss";
 
 :root {
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
   --canvas: #f7f9fc;
   --surface: #ffffff;
   --surface-subtle: #f3f6fb;
@@ -157,6 +161,32 @@ textarea.field { min-height: 100px; resize: vertical; }
 .error-banner { display: flex; align-items: center; gap: 9px; border: 1px solid #f3c5c0; border-radius: 10px; padding: 11px 12px; background: var(--danger-soft); color: var(--danger); font-size: 12px; font-weight: 600; }
 .success-banner { display: flex; align-items: center; gap: 9px; border: 1px solid #b7dfc6; border-radius: 10px; padding: 11px 12px; background: var(--success-soft); color: var(--success); font-size: 12px; font-weight: 650; }
 
+.portal-safe-center {
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding:
+    calc(var(--safe-area-top) + 24px)
+    calc(var(--safe-area-right) + 20px)
+    calc(var(--safe-area-bottom) + 24px)
+    calc(var(--safe-area-left) + 20px);
+}
+
+.portal-safe-content {
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding:
+    calc(var(--safe-area-top) + 20px)
+    calc(var(--safe-area-right) + 20px)
+    calc(var(--safe-area-bottom) + 136px)
+    calc(var(--safe-area-left) + 20px);
+}
+
+.portal-safe-bottom-nav {
+  padding-right: calc(var(--safe-area-right) + 16px);
+  padding-bottom: calc(var(--safe-area-bottom) + 12px);
+  padding-left: calc(var(--safe-area-left) + 16px);
+}
+
 .scanner-shell { position: relative; overflow: hidden; border-radius: 18px; background: #08111f; aspect-ratio: 4 / 3; }
 .scanner-video { width: 100%; height: 100%; object-fit: cover; }
 .scanner-guide { position: absolute; inset: 15%; border: 2px solid rgba(255,255,255,.92); border-radius: 24px; box-shadow: 0 0 0 999px rgba(4,12,24,.42); }
@@ -247,8 +277,33 @@ textarea.field { min-height: 100px; resize: vertical; }
   to { transform: rotate(360deg) scale(.98); }
 }
 
-.modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(20,29,45,.48); backdrop-filter: blur(6px); animation: fade .18s ease-out; }
-.modal-box { width: 100%; max-height: calc(100vh - 40px); overflow-y: auto; border: 1px solid rgba(255,255,255,.5); border-radius: 20px; padding: 22px; background: var(--surface); box-shadow: 0 28px 80px rgba(25,40,65,.22); animation: enter .2s ease-out; }
+.modal-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding:
+    calc(var(--safe-area-top) + 20px)
+    calc(var(--safe-area-right) + 20px)
+    calc(var(--safe-area-bottom) + 20px)
+    calc(var(--safe-area-left) + 20px);
+  background: rgba(20,29,45,.48);
+  backdrop-filter: blur(6px);
+  animation: fade .18s ease-out;
+}
+.modal-box {
+  width: 100%;
+  max-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgba(255,255,255,.5);
+  border-radius: 20px;
+  padding: 22px;
+  background: var(--surface);
+  box-shadow: 0 28px 80px rgba(25,40,65,.22);
+  animation: enter .2s ease-out;
+}
 .modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .modal-header h2 { margin: 1px 0 0; font-size: 18px; letter-spacing: -.025em; }
 .modal-header p { margin: 5px 0 0; color: var(--text-secondary); font-size: 12px; }
@@ -318,6 +373,17 @@ textarea.field { min-height: 100px; resize: vertical; }
 @media (max-width: 480px) {
   .metric-grid { grid-template-columns: 1fr; }
   .card { border-radius: 14px; }
-  .modal-backdrop { align-items: end; padding: 0; }
-  .modal-box { max-height: 92vh; border-radius: 20px 20px 0 0; }
+  .modal-backdrop {
+    align-items: end;
+    padding:
+      calc(var(--safe-area-top) + 12px)
+      var(--safe-area-right)
+      var(--safe-area-bottom)
+      var(--safe-area-left);
+  }
+  .modal-box {
+    max-height: calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom) - 12px);
+    border-radius: 20px 20px 0 0;
+    padding-bottom: calc(22px + max(var(--safe-area-bottom), 8px));
+  }
 }
